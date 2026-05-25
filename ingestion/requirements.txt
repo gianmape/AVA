@@ -1,0 +1,6 @@
+# Ingestion dependencies
+generative-ai-hub-sdk==4.12.4  # SAP AI Core auth + embeddings
+pandas>=2.0.0                  # Excel parsing
+openpyxl>=3.1.0               # Excel reading
+hdbcli>=2.20.0                # HANA Cloud connection
+python-dotenv>=1.0.0          # Load .env credentials

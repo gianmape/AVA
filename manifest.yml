@@ -1,0 +1,27 @@
+---
+applications:
+  - name: painpoints-mcp
+    command: python mcp_server_cf.py
+    buildpacks:
+      - python_buildpack
+    memory: 512M
+    disk_quota: 1G
+    instances: 1
+    # Non-secret env vars declared here
+    # Secrets are set via cf set-env (already applied to the running app)
+    env:
+      AICORE_RESOURCE_GROUP: default
+      LLM_MODEL_NAME: gpt-4o-mini
+      EMBEDDING_MODEL_NAME: text-embedding-ada-002
+      HANA_PORT: "443"
+      HANA_SCHEMA: SVA2
+      # Secrets — set with cf set-env (do not add values here):
+      #   cf set-env painpoints-mcp AICORE_AUTH_URL      <value>
+      #   cf set-env painpoints-mcp AICORE_BASE_URL      <value>
+      #   cf set-env painpoints-mcp AICORE_CLIENT_ID     <value>
+      #   cf set-env painpoints-mcp AICORE_CLIENT_SECRET <value>
+      #   cf set-env painpoints-mcp LLM_DEPLOYMENT_ID    <value>
+      #   cf set-env painpoints-mcp EMBEDDING_DEPLOYMENT_ID <value>
+      #   cf set-env painpoints-mcp HANA_HOST            <value>
+      #   cf set-env painpoints-mcp HANA_USER            <value>
+      #   cf set-env painpoints-mcp HANA_PASSWORD        <value>
