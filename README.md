@@ -1,4 +1,4 @@
-# Pain Points RAG
+# SVA2.0
 
 > Turn years of SAP Ariba consultant knowledge into instant recommendations.
 
@@ -95,20 +95,7 @@ python ingestion/ingest.py data/legacy/
 
 ### 5. Connect Joule Desktop
 
-Add the MCP server to your Joule Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "painpoints": {
-      "command": "/path/to/painpoints/.venv/bin/python",
-      "args": ["/path/to/painpoints/mcp_server.py"]
-    }
-  }
-}
-```
-
-Then ask Joule: `Process pain points from /absolute/path/to/file.xlsx`
+Add the MCP server to your Joule Desktop config 
 
 ## MCP tools
 
