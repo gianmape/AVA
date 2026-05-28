@@ -30,6 +30,7 @@ from shared.config import (
     embed_text,
     hana_connection,
     VALID_SOLUTIONS,
+    normalise_solution_area,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,13 +38,15 @@ from shared.config import (
 # ---------------------------------------------------------------------------
 VECTOR_SEARCH_SQL = """
 SELECT TOP {top_k}
-    PAIN_POINT, COMMENTS, RECOMMENDATIONS, CATEGORY,
+    ID, PAIN_POINT, SOLUTION_AREA, RECOMMENDATION, CATEGORY,
     EFFORT, BENEFITS, TIMELINE, IMPACT
 FROM SVA2.PAIN_POINTS
 WHERE SOLUTION = ?
 {area_filter}
 ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
 """
+
+UPDATE_USE_COUNT_SQL = "UPDATE SVA2.PAIN_POINTS SET USE_COUNT = USE_COUNT + 1 WHERE ID = ?"
 
 TARGET_COLS = {
     "recommendations":        "Recommendations",
@@ -140,12 +143,12 @@ def read_excel_painpoints(input_path: str) -> list[dict]:
         except LangDetectException:
             lang = "en"
         rows.append({
-            "idx":        int(idx),
-            "pain_point": pain_point,
-            "solution":   solution_matched,
-            "area":       clean_str(row.get("area")),
-            "sheet":      sheet,
-            "language":   lang,
+            "idx":          int(idx),
+            "pain_point":   pain_point,
+            "solution":     solution_matched,
+            "solution_area": normalise_solution_area(clean_str(row.get("solution_area"))),
+            "sheet":        sheet,
+            "language":     lang,
         })
 
     return rows
@@ -169,7 +172,7 @@ def retrieve_similar_cases(
     """
     query_vector = embed_text(pain_point)
     vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
-    area_filter  = "AND AREA = ?" if area else ""
+    area_filter  = "AND SOLUTION_AREA = ?" if area else ""
 
     positional = [solution]
     if area:
@@ -182,19 +185,22 @@ def retrieve_similar_cases(
         VECTOR_SEARCH_SQL.format(top_k=top_k, area_filter=area_filter),
         positional,
     )
-    cols = ["pain_point", "comments", "recommendations", "category",
+    cols = ["id", "pain_point", "solution_area", "recommendation", "category",
             "effort", "benefits", "timeline", "impact"]
     raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    # Increment USE_COUNT for every retrieved case
+    for r in raw:
+        cursor.execute(UPDATE_USE_COUNT_SQL, (r["id"],))
+    conn.commit()
+
     cursor.close()
     conn.close()
 
-    # Return only the human-validated signals — not the full recommendation text.
-    # This prevents Joule from anchoring on legacy wording instead of researching freely.
-    # pain_point and comments give Joule context for where to look in SAP docs.
     rows = [
         {
             "similar_pain_point": r["pain_point"],
-            "comments":           r["comments"],
+            "solution_area":      r["solution_area"],
             "category":           r["category"],
             "effort":             r["effort"],
             "timeline":           r["timeline"],
@@ -225,7 +231,7 @@ def retrieve_similar_cases_batch(
 
         query_vector = embed_text(pain_point)
         vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
-        area_filter  = "AND AREA = ?" if area else ""
+        area_filter  = "AND SOLUTION_AREA = ?" if area else ""
 
         positional = [solution]
         if area:
@@ -238,16 +244,22 @@ def retrieve_similar_cases_batch(
             VECTOR_SEARCH_SQL.format(top_k=top_k, area_filter=area_filter),
             positional,
         )
-        cols = ["pain_point", "comments", "recommendations", "category",
+        cols = ["id", "pain_point", "solution_area", "recommendation", "category",
                 "effort", "benefits", "timeline", "impact"]
         raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+        # Increment USE_COUNT for every retrieved case
+        for r in raw:
+            cursor.execute(UPDATE_USE_COUNT_SQL, (r["id"],))
+        conn.commit()
+
         cursor.close()
         conn.close()
 
         cases = [
             {
                 "similar_pain_point": r["pain_point"],
-                "comments":           r["comments"],
+                "solution_area":      r["solution_area"],
                 "category":           r["category"],
                 "effort":             r["effort"],
                 "timeline":           r["timeline"],

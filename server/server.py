@@ -68,13 +68,13 @@ You MUST write ALL generated text for that row (Recommendations, Benefits) in th
    Then synthesize your own original output:
    - Recommendations: actionable steps grounded in your SAP documentation research.
      Do NOT copy from historical cases — use them only to understand what area to explore.
-   - Category: one of — Feature Adoption, Innovation, Q&A, Process Change, Roadmap Discussion
-   - Effort: Low | Medium | High | N/A  (use historical signals as a hint)
+   - Category: one of — Feature Adoption, Innovation, Q&A, Process Change, Training, Roadmap Discussion
+   - Effort: Low | Medium | High | Complex | N/A  (use historical signals as a hint)
    - Benefits: expected business outcome, informed by SAP best practices (same language as pain point)
    - Documentation: specific, relevant SAP help articles, community posts, or learning resources
      you found during your research. Return as JSON array of {"title": "...", "url": "..."}.
      Prioritize specific and actionable links over generic landing pages.
-   - Timeline: Quick Win | Short Term | Mid Term | Long Term | Ongoing
+   - Timeline: Quick Win | Short Term | Mid Term | Long Term
    - Impact: Low | Medium | High  (use historical signals as a hint)
 
 4. Call write_excel_output with:
@@ -127,7 +127,7 @@ def read_excel_painpoints(input_path: str) -> str:
       - idx (int): row index, used later in write_excel_output
       - pain_point (str): the pain point text
       - solution (str): canonical SAP Ariba solution name
-      - area (str | null): area/segment if provided
+      - solution_area (str | null): functional area within the solution if provided
       - sheet (str): sheet name where the data was found
       - language (str): detected language code (e.g. "es", "en", "pt")
                         ALL generated text for this row MUST be in this language.
@@ -170,12 +170,12 @@ def retrieve_similar_cases(
     Args:
         pain_point: Text of the pain point to search for.
         solution:   SAP Ariba solution (e.g. "Ariba Buying", "Sourcing", "Contracts").
-        area:       Optional area/segment filter (e.g. "Pharmaceuticals").
+        area:       Optional solution_area filter (e.g. "Integración", "Registro de Proveedores").
         top_k:      Number of similar cases to return (default 3, max 10).
 
     Returns:
         JSON array of similar cases. Each case has:
-        similar_pain_point, comments, category, effort, timeline, impact.
+        similar_pain_point, solution_area, category, effort, timeline, impact.
         Empty array means no similar cases found — use SAP documentation knowledge directly.
     """
     top_k = min(int(top_k), 10)
@@ -201,12 +201,12 @@ def retrieve_similar_cases_batch(
                - idx (int): row index
                - pain_point (str)
                - solution (str)
-               - area (str | null, optional)
+               - solution_area (str | null, optional)
         top_k: Number of similar cases per pain point (default 3, max 10).
 
     Returns:
         JSON array of {idx, cases} — one entry per input item.
-        cases is a list of {similar_pain_point, comments, category, effort, timeline, impact}.
+        cases is a list of {similar_pain_point, solution_area, category, effort, timeline, impact}.
         Empty cases list means no similar cases found for that row.
     """
     top_k = min(int(top_k), 10)
@@ -234,12 +234,12 @@ def write_excel_output(
         rows:        List of row results. Each element must have:
                        - idx (int): row index from read_excel_painpoints
                        - Recommendations (str)
-                       - Category (str): one of the allowed taxonomy values
-                       - Effort (str): Low / Medium / High / N/A
+                       - Category (str): Feature Adoption | Innovation | Q&A | Process Change | Training | Roadmap Discussion
+                       - Effort (str): Low | Medium | High | Complex | N/A
                        - Benefits (str)
                        - Documentation (list of {title, url} dicts)
-                       - Timeline (str): Quick Win / Short Term / Mid Term / Long Term / Ongoing
-                       - Impact (str): Low / Medium / High
+                       - Timeline (str): Quick Win | Short Term | Mid Term | Long Term
+                       - Impact (str): Low | Medium | High
                      All fields except idx are optional.
         output_path: Optional output path. Defaults to <input>_RECOMMENDED.xlsx in output/.
 

@@ -23,6 +23,10 @@ from shared.config import (
     embed_text,
     hana_connection,
     VALID_SOLUTIONS,
+    normalise_solution_area,
+    normalise_effort,
+    normalise_timeline,
+    normalise_impact,
 )
 
 # ---------------------------------------------------------------------------
@@ -30,11 +34,11 @@ from shared.config import (
 # ---------------------------------------------------------------------------
 INSERT_SQL = """
 INSERT INTO SVA2.PAIN_POINTS
-    (SOURCE_FILE, PAIN_POINT, COMMENTS, SOLUTION, AREA, CATEGORY,
-     RECOMMENDATIONS, EFFORT, BENEFITS, DOCUMENTATION, TIMELINE, IMPACT,
-     KEYS_TO_SUCCESS, EMBEDDING)
+    (SOURCE_FILE, PAIN_POINT, SOLUTION, SOLUTION_AREA, CATEGORY,
+     RECOMMENDATION, EFFORT, TIMELINE, BENEFITS, IMPACT, SOURCE_TYPE,
+     EMBEDDING)
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TO_REAL_VECTOR(?))
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TO_REAL_VECTOR(?))
 """
 
 
@@ -60,19 +64,16 @@ def process_row(row: dict, source_file: str) -> dict | None:
     )
 
     return {
-        "source_file":    source_file,
-        "pain_point":     pain_point,
-        "comments":       clean_str(row.get("comments")),
-        "solution":       solution_matched,
-        "area":           clean_str(row.get("area")),
-        "category":       clean_str(row.get("category")),
-        "recommendations": clean_str(row.get("recommendations")),
-        "effort":         clean_str(row.get("effort")),
-        "benefits":       clean_str(row.get("benefits")),
-        "documentation":  clean_str(row.get("documentation")),
-        "timeline":       clean_str(row.get("timeline")),
-        "impact":         clean_str(row.get("impact")),
-        "keys_to_success": clean_str(row.get("keys_to_success")),
+        "source_file":   source_file,
+        "pain_point":    pain_point,
+        "solution":      solution_matched,
+        "solution_area": normalise_solution_area(clean_str(row.get("solution_area"))),
+        "category":      clean_str(row.get("category")),
+        "recommendation": clean_str(row.get("recommendation")),
+        "effort":        normalise_effort(clean_str(row.get("effort"))),
+        "timeline":      normalise_timeline(clean_str(row.get("timeline"))),
+        "benefits":      clean_str(row.get("benefits")),
+        "impact":        normalise_impact(clean_str(row.get("impact"))),
     }
 
 
@@ -102,13 +103,9 @@ def ingest_file(filepath: str):
             skipped += 1
             continue
 
-        # Build embedding text: pain point + comments (if available)
-        embed_input = row["pain_point"]
-        if row["comments"]:
-            embed_input += "\n" + row["comments"]
-
+        # Embed only the pain point — maximises similarity precision
         try:
-            vector = embed_text(embed_input)
+            vector = embed_text(row["pain_point"])
         except Exception as e:
             print(f"  ⚠ Embedding failed for row, skipping: {e}")
             skipped += 1
@@ -120,17 +117,15 @@ def ingest_file(filepath: str):
         cursor.execute(INSERT_SQL, (
             row["source_file"],
             row["pain_point"],
-            row["comments"],
             row["solution"],
-            row["area"],
+            row["solution_area"],
             row["category"],
-            row["recommendations"],
+            row["recommendation"],
             row["effort"],
-            row["benefits"],
-            row["documentation"],
             row["timeline"],
+            row["benefits"],
             row["impact"],
-            row["keys_to_success"],
+            "historical_excel",
             vector_str,
         ))
 
