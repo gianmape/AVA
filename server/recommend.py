@@ -51,7 +51,8 @@ UPDATE_USE_COUNT_SQL = "UPDATE SVA2.PAIN_POINTS SET USE_COUNT = USE_COUNT + 1 WH
 
 KNOWLEDGE_SEARCH_SQL = """
 SELECT TOP {top_k}
-    TITLE, CONTENT, SOLUTION, RELEASE, AGENT_BASED, JOULE_BASED
+    TITLE, CONTENT, SOLUTION, RELEASE, AGENT_BASED, JOULE_BASED,
+    VALUE_DRIVER, VALUE_LEVER, KPI_ID, KPI_CATEGORY, KPI_TARGET
 FROM SVA2.KNOWLEDGE_BASE
 WHERE SOURCE_TYPE = ?
 ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
@@ -67,6 +68,7 @@ TARGET_COLS = {
     "timeline":               "Timeline",
     "impact":                 "Impact",
     "ariba next-gen":         "Ariba Next-Gen",
+    "value kpis":             "Value KPIs",
 }
 
 
@@ -383,9 +385,12 @@ def write_excel_output(
         excel_row  = data_start_excel_row + idx
 
         wrote_any = False
+        written_letters = set()  # avoid writing the same column twice (alias deduplication)
         for header_key, result_key in TARGET_COLS.items():
             letter = col_letter.get(header_key)
             if not letter:
+                continue
+            if letter in written_letters:
                 continue
             value = row.get(result_key)
             if not value:
@@ -421,6 +426,7 @@ def write_excel_output(
             else:
                 cell = ws[f"{letter}{excel_row}"]
                 cell.value = str(value)
+            written_letters.add(letter)
             wrote_any = True
 
         if wrote_any:
@@ -460,7 +466,8 @@ def retrieve_knowledge_context(
             KNOWLEDGE_SEARCH_SQL.format(top_k=top_k),
             positional,
         )
-        cols = ["title", "content", "solution", "release", "agent_based", "joule_based"]
+        cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
+                "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target"]
         rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
         cursor.close()
         conn.close()

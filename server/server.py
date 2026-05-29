@@ -74,7 +74,7 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
 2.5 Call retrieve_knowledge_context ONCE with ALL rows as separate calls — one per row:
    - pain_point: the pain point text of each row
    - solution: the solution of each row
-   - source_types: ["next_gen"]
+   - source_types: ["next_gen", "vlm_kpis"] — always include both
    Store the results indexed by idx for use in step 3.
 
 LANGUAGE RULE: Each row from read_excel_painpoints includes a `language` field (e.g. "es", "en", "pt").
@@ -104,11 +104,18 @@ You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba
        * If relevant features found: write a concise text explaining which Next-gen feature(s) address this pain point.
          For each feature include: name, Release, and — ONLY if the value is "Yes" — mention Agent-based and/or Joule-based explicitly.
        * If no relevant features: write exactly "No Next-gen coverage identified."
+   - Value KPIs: based on the vlm_kpis results from retrieve_knowledge_context for this row's idx.
+       * Available for: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk.
+         For other solutions write "No KPI data available for this solution."
+       * If relevant KPIs found: for each KPI write a single line:
+         [KPI Name] (ID: [kpi_id]) — [value_driver] · [value_lever] | Target: [kpi_target]
+         List up to 3 KPIs ordered by relevance. Omit any KPI where kpi_id or kpi_target is null.
+       * If no relevant KPIs: write exactly "No Value KPIs identified."
 
 4. Call write_excel_output with:
    - input_path: the same attachment path passed to read_excel_painpoints
    - rows: a list containing ONLY the rows from step 3, each with its original idx value.
-     Each row must include: Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen
+     Each row must include: Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen, Value KPIs
 
 5. After write_excel_output completes, present ONLY this — nothing else:
    a) The message field from write_excel_output.
@@ -170,7 +177,7 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 2.5 Immediately after query_single_pain_point returns, call retrieve_knowledge_context with:
    - pain_point: same text as step 2
    - solution: copy the exact value of "validated_solution" from the query_single_pain_point JSON result — do NOT use the original user input or any other value
-   - source_types: ["next_gen"]
+   - source_types: ["next_gen", "vlm_kpis"]
 
 3. After both tools return, synthesize the full recommendation for this single pain point.
    Research SAP documentation — HARD LIMIT: no more than 3 sources.
@@ -216,6 +223,16 @@ When a user describes a pain point in text (without attaching an Excel file), ac
  • [title] (Release: [release][, Agent-based][, Joule-based]) — [one sentence on how it addresses the pain point]
  Include "Agent-based" in the parenthesis ONLY if agent_based = "Yes". Include "Joule-based" ONLY if joule_based = "Yes". Omit both tags if both are "No".
  Never omit Release.
+
+**Value KPIs:**
+[Rules for this section:
+ 1. Only populate when validated_solution is one of: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk — for other solutions write: "No KPI data available for this solution."
+ 2. If vlm_kpis results are empty, write: "No Value KPIs identified for this pain point."
+ 3. If relevant KPIs found, list up to 3 using EXACTLY this format — one bullet per KPI:
+    • [KPI Name] (ID: [kpi_id]) — [value_driver] · [value_lever]
+      Measure: [content / formula]
+      Target: [kpi_target]
+ 4. After the KPI list, add one line: "Source: SAP APM KPI Catalog — me.sap.com/app/kpicatalog"
 ---
 
    Rules for the card:
@@ -357,6 +374,7 @@ def write_excel_output(
                        - Timeline (str): Quick Win | Short Term | Mid Term | Long Term
                        - Impact (str): Low | Medium | High
                        - Ariba Next-Gen (str): Next-gen coverage text or "No Next-gen coverage identified."
+                       - Value KPIs (str): KPI block text or "No Value KPIs identified." (Ariba Sourcing only)
                      All fields except idx are optional.
         output_path: Optional output path. Defaults to <input>_RECOMMENDED.xlsx in output/.
 
@@ -482,12 +500,15 @@ def retrieve_knowledge_context(
     Args:
         pain_point:   Pain point text (same as passed to query_single_pain_point).
         solution:     Canonical solution name (validated_solution from query_single_pain_point result).
-        source_types: Knowledge sources to query. Currently supported: ["next_gen"]
+        source_types: Knowledge sources to query. Supported: ["next_gen", "vlm_kpis"]
+                      "next_gen": Next-gen SAP Ariba roadmap features (all solutions)
+                      "vlm_kpis": Value Lever & KPI index (Ariba Sourcing only)
                       Future sources: "ai_scenarios", "premium_services"
 
     Returns:
-        JSON dict keyed by source_type. Each value is a list of matching entries:
-        {title, content, solution, release, agent_based, joule_based}
+        JSON dict keyed by source_type. Each value is a list of matching entries.
+        next_gen entries: {title, content, solution, release, agent_based, joule_based}
+        vlm_kpis entries: {title, content, value_driver, value_lever, kpi_id, kpi_category, kpi_target}
         Empty list means no relevant entries found — use the "no coverage" message.
     """
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | pain_point=%.80s…",

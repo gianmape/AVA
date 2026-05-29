@@ -58,6 +58,48 @@ VALUES
     (?, ?, ?, ?, ?, ?, ?, ?, TO_REAL_VECTOR(?))
 """
 
+INSERT_VLM_SQL = """
+INSERT INTO SVA2.KNOWLEDGE_BASE
+    (SOURCE_TYPE, SOLUTION, TITLE, CONTENT,
+     VALUE_DRIVER, VALUE_LEVER, KPI_ID, KPI_CATEGORY, KPI_TARGET,
+     SOURCE_FILE, EMBEDDING)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TO_REAL_VECTOR(?))
+"""
+
+# VLM column mapping: Excel header → internal key
+# Supports both file formats (SAP_Ariba_Sourcing_VLM_Index and SAP_Ariba_VLM_Index)
+VLM_COL_MAP = {
+    # Common columns
+    "Pain Point":                                  "pain_point",
+    "Value Driver":                                "value_driver",
+    "Value Lever":                                 "value_lever",
+    "KPI Name":                                    "title",
+    "KPI Category":                                "kpi_category",
+    # Format A (Sourcing-only file)
+    "KPI ID":                                      "kpi_id",
+    "Formula / Measure":                           "content",
+    "Typical Target / Benchmark":                  "kpi_target",
+    "Ariba Sourcing Capability / Recommendation":  "capability",
+    "Data Source":                                 "data_source",
+    "KPI Reference (SAP KPI Catalog)":             "kpi_reference",
+    # Format B (multi-solution file)
+    "APM KPI ID":                                  "kpi_id",
+    "KPI Definition / Formula":                    "content",
+    "Measurement Freq.":                           "measurement_freq",
+    "Recommendation":                              "capability",
+    "KPI Catalog Link":                            "kpi_reference",
+}
+
+# Sheet name → canonical solution name (for multi-solution VLM files)
+VLM_SHEET_SOLUTION_MAP = {
+    "ariba sourcing":           "Ariba Sourcing",
+    "ariba buying & invoicing": "Ariba Buying",
+    "ariba contracts":          "Ariba Contracts",
+    "ariba slp":                "Ariba SLP",
+    "ariba risk":               "Ariba Supplier Risk",
+}
+
 
 # ---------------------------------------------------------------------------
 # Ingestion
@@ -65,14 +107,20 @@ VALUES
 def ingest_file(filepath: str, source_type: str):
     print(f"\n── Ingesting: {filepath}  [source_type={source_type}]")
 
+    if source_type == "vlm_kpis":
+        _ingest_vlm(filepath)
+    else:
+        _ingest_knowledge(filepath, source_type)
+
+
+def _ingest_knowledge(filepath: str, source_type: str):
+    """Ingest next_gen / ai_scenarios / premium_services Excel files."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         df = pd.read_excel(filepath, dtype=str)
 
-    # Normalise column names to lowercase stripped keys
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Map known column names
     col_map = {
         "SAP Ariba Solution / Product":       "solution",
         "Feature or Functionality Announced": "title",
@@ -106,7 +154,6 @@ def ingest_file(filepath: str, source_type: str):
         agent_based = clean_str(raw.get("agent_based"))
         joule_based = clean_str(raw.get("joule_based"))
 
-        # Embed title + content together for richer semantic matching
         embed_text_value = f"{title} — {content}"
         try:
             vector = embed_text(embed_text_value)
@@ -137,7 +184,96 @@ def ingest_file(filepath: str, source_type: str):
     conn.commit()
     cursor.close()
     conn.close()
+    print(f"  Done — inserted: {inserted}, skipped: {skipped}")
 
+
+def _ingest_vlm(filepath: str):
+    """
+    Ingest a VLM KPI Index Excel file into SVA2.KNOWLEDGE_BASE as source_type='vlm_kpis'.
+
+    Supports two file formats:
+    - Single-sheet (SAP_Ariba_Sourcing_VLM_Index): solution fixed to "Ariba Sourcing",
+      header row at index 1 (row 0 is a merged title).
+    - Multi-sheet (SAP_Ariba_VLM_Index): each sheet is a solution, header at index 2
+      (rows 0-1 are section labels, row 2 has column names).
+
+    Embedding per row: pain_point | value_lever | kpi_name
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        xl = pd.ExcelFile(filepath)
+
+    data_sheets = [s for s in xl.sheet_names if s.lower() != "how to use"]
+    is_multi = len(data_sheets) > 1
+
+    conn   = hana_connection()
+    cursor = conn.cursor()
+    inserted = skipped = 0
+
+    for sheet_name in data_sheets:
+        # Determine solution from sheet name (multi) or default to Ariba Sourcing (single)
+        solution = VLM_SHEET_SOLUTION_MAP.get(sheet_name.lower(), "Ariba Sourcing") if is_multi else "Ariba Sourcing"
+
+        # Multi-sheet files have 2 header rows before column names (title + section labels)
+        header_row = 2 if is_multi else 1
+        df = xl.parse(sheet_name, header=header_row, dtype=str)
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.rename(columns=VLM_COL_MAP)
+
+        required = {"pain_point", "title", "content", "value_driver", "value_lever"}
+        missing = required - set(df.columns)
+        if missing:
+            print(f"  Warning: sheet '{sheet_name}' missing columns {missing}, skipping.")
+            continue
+
+        print(f"  Sheet '{sheet_name}' → {solution}")
+
+        for _, raw in df.iterrows():
+            pain_point   = clean_str(raw.get("pain_point"))
+            title        = clean_str(raw.get("title"))
+            content      = clean_str(raw.get("content"))
+            value_driver = clean_str(raw.get("value_driver"))
+            value_lever  = clean_str(raw.get("value_lever"))
+            kpi_id       = clean_str(raw.get("kpi_id"))
+            kpi_category = clean_str(raw.get("kpi_category"))
+            kpi_target   = clean_str(raw.get("kpi_target"))
+
+            if not pain_point or not title or not content:
+                skipped += 1
+                continue
+
+            embed_text_value = f"{pain_point} | {value_lever} | {title}"
+            try:
+                vector = embed_text(embed_text_value)
+            except Exception as e:
+                print(f"  Warning: embedding failed, skipping KPI '{title[:60]}': {e}")
+                skipped += 1
+                continue
+
+            vector_str = "[" + ",".join(str(v) for v in vector) + "]"
+
+            cursor.execute(INSERT_VLM_SQL, (
+                "vlm_kpis",
+                solution,
+                title,
+                content,
+                value_driver,
+                value_lever,
+                kpi_id,
+                kpi_category,
+                kpi_target,
+                os.path.basename(filepath),
+                vector_str,
+            ))
+
+            inserted += 1
+            if inserted % 10 == 0:
+                conn.commit()
+                print(f"  {inserted} rows committed…")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
     print(f"  Done — inserted: {inserted}, skipped: {skipped}")
 
 
@@ -150,7 +286,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--source-type",
         default="next_gen",
-        choices=["next_gen", "ai_scenarios", "premium_services"],
+        choices=["next_gen", "ai_scenarios", "premium_services", "vlm_kpis"],
         help="Knowledge source type (default: next_gen)",
     )
     args = parser.parse_args()
