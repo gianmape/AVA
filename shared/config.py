@@ -20,10 +20,11 @@ load_dotenv()
 # Valid taxonomy values — used in both ingestion (metadata) and query (prompt)
 # ---------------------------------------------------------------------------
 VALID_SOLUTIONS = {
-    "Ariba Buying", "Ariba Buying and Inv", "Catalog", "Commerce Auto",
-    "Contracts", "Discount Mgmnt", "Discovery", "Guided Buying",
-    "Integration", "Invoice Mgmnt", "Overall", "Reporting", "Risk",
-    "Sourcing", "Spend Analysis", "SIPM", "SLP", "Supply Chain Collaboration",
+    "Ariba Buying", "Ariba Catalog", "Commerce Automation",
+    "Ariba Contracts", "Business Network", "Ariba Guided Buying",
+    "Ariba Invoice", "Ariba Reporting", "Ariba Supplier Risk",
+    "Ariba Sourcing", "Spend Analysis", "Ariba SIPM",
+    "Ariba SLP",
 }
 
 VALID_SOLUTION_AREAS = {
@@ -137,6 +138,61 @@ def hana_connection():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def normalise_solution(value: str | None) -> str | None:
+    """
+    Fuzzy-match a raw solution string against VALID_SOLUTIONS.
+
+    Handles variants like "Ariba Sourcing" -> "Sourcing" by also trying
+    with the "Ariba " / "SAP Ariba " prefix stripped before fuzzy matching.
+    Returns the canonical name if a match is found, otherwise None.
+    """
+    if not value:
+        return None
+
+    import unicodedata
+    import re
+
+    def _normalise(s: str) -> str:
+        nfkd = unicodedata.normalize("NFKD", s)
+        return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+
+    canonical_map = {_normalise(v): v for v in VALID_SOLUTIONS}
+
+    # 1. Exact match
+    raw_norm = _normalise(value)
+    if raw_norm in canonical_map:
+        return canonical_map[raw_norm]
+
+    # 2. Strip common prefixes and try exact match again
+    stripped = re.sub(r"^(sap ariba |ariba )", "", raw_norm).strip()
+    if stripped in canonical_map:
+        return canonical_map[stripped]
+
+    # 2b. Handle abbreviated canonical names (e.g. "Ariba Invoice" -> "Invoice Mgmnt")
+    _PREFIX_ALIASES = {
+        "invoice":        "invoice mgmnt",
+        "supplier risk":  "risk",
+        "risk":           "risk",
+        "catalog":        "catalog",
+        "overall":        "overall",
+        "reporting":      "reporting",
+    }
+    if stripped in _PREFIX_ALIASES and _PREFIX_ALIASES[stripped] in canonical_map:
+        return canonical_map[_PREFIX_ALIASES[stripped]]
+
+    # 3. Fuzzy match on original (high cutoff to avoid false positives)
+    close = difflib.get_close_matches(raw_norm, canonical_map.keys(), n=1, cutoff=0.82)
+    if close:
+        return canonical_map[close[0]]
+
+    # 4. Fuzzy match on stripped prefix version
+    close = difflib.get_close_matches(stripped, canonical_map.keys(), n=1, cutoff=0.82)
+    if close:
+        return canonical_map[close[0]]
+
+    return None
+
+
 def normalise_solution_area(value: str | None) -> str | None:
     """
     Fuzzy-match a raw solution_area string against VALID_SOLUTION_AREAS.

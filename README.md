@@ -24,10 +24,10 @@ formatting preserved.
 
 | Layer | Technology |
 |---|---|
-| LLM + SAP docs | Joule Desktop |
-| Embeddings | text-embedding-ada-002 · SAP AI Core |
+| LLM + SAP docs | Joule Work Desktop |
+| Embeddings | Gemini Embedding · SAP AI Core |
 | Vector store | SAP HANA Cloud Vector Engine |
-| Orchestration | MCP server (stdio) |
+| Orchestration | MCP server (FastMCP · HTTP · SAP BTP / Cloud Foundry) |
 | Excel I/O | openpyxl |
 | BTP SDK | gen-ai-hub-sdk |
 

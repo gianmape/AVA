@@ -11,8 +11,8 @@ applications:
     # Secrets are set via cf set-env (already applied to the running app)
     env:
       AICORE_RESOURCE_GROUP: default
-      LLM_MODEL_NAME: gpt-4o-mini
-      EMBEDDING_MODEL_NAME: text-embedding-ada-002
+      LLM_MODEL_NAME: gemini-2.5-pro
+      EMBEDDING_MODEL_NAME: gemini-embedding
       HANA_PORT: "443"
       HANA_SCHEMA: SVA2
       # Secrets — set with cf set-env (do not add values here):

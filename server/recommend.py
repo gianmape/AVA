@@ -31,6 +31,7 @@ from shared.config import (
     hana_connection,
     VALID_SOLUTIONS,
     normalise_solution_area,
+    normalise_solution,
 )
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,14 @@ ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
 
 UPDATE_USE_COUNT_SQL = "UPDATE SVA2.PAIN_POINTS SET USE_COUNT = USE_COUNT + 1 WHERE ID = ?"
 
+KNOWLEDGE_SEARCH_SQL = """
+SELECT TOP {top_k}
+    TITLE, CONTENT, SOLUTION, RELEASE, AGENT_BASED, JOULE_BASED
+FROM SVA2.KNOWLEDGE_BASE
+WHERE SOURCE_TYPE = ?
+ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
+"""
+
 TARGET_COLS = {
     "recommendations":        "Recommendations",
     "category":               "Category",
@@ -57,6 +66,7 @@ TARGET_COLS = {
     "documentation":          "Documentation",
     "timeline":               "Timeline",
     "impact":                 "Impact",
+    "ariba next-gen":         "Ariba Next-Gen",
 }
 
 
@@ -333,6 +343,32 @@ def write_excel_output(
             key = str(cell.value).strip().lower()
             col_letter[key] = cell.column_letter
 
+    # Auto-create any output columns that are missing from the header row.
+    # Track canonical names already mapped to avoid duplicates (e.g. "Documentation"
+    # can be reached via both "documentation" and "links to documentation").
+    next_col = ws.max_column + 1
+    already_mapped = set(col_letter.values())  # column letters already assigned
+    canonical_created = set()                   # result_key values already auto-created
+
+    for header_key, result_key in TARGET_COLS.items():
+        if header_key in col_letter:
+            continue  # column already exists under this key
+        if result_key in canonical_created:
+            # Another alias for this result_key was already handled — just point to same letter
+            existing = next(
+                col_letter[k] for k, v in TARGET_COLS.items()
+                if v == result_key and k in col_letter
+            )
+            col_letter[header_key] = existing
+            continue
+        has_value = any(row.get(result_key) for row in rows)
+        if has_value:
+            cell = ws.cell(row=header_excel_row, column=next_col, value=result_key)
+            cell.font = Font(name="Calibri", size=11, bold=True)
+            col_letter[header_key] = cell.column_letter
+            canonical_created.add(result_key)
+            next_col += 1
+
     data_start_excel_row = header_excel_row + 1
 
     rows_written = 0
@@ -392,3 +428,45 @@ def write_excel_output(
 
     wb.save(output_path)
     return output_path, rows_written
+
+
+# ---------------------------------------------------------------------------
+# Knowledge base retrieval
+# ---------------------------------------------------------------------------
+def retrieve_knowledge_context(
+    pain_point: str,
+    solution: str,
+    source_types: list[str],
+    top_k: int = 3,
+) -> dict:
+    """
+    Search SVA2.KNOWLEDGE_BASE for each source_type in parallel.
+
+    Returns a dict keyed by source_type, each value a list of matching entries:
+    [{title, content, solution, release, agent_based, joule_based}, ...]
+    Empty list means no relevant entries found for that source type.
+    """
+    import concurrent.futures
+
+    query_vector = embed_text(pain_point)
+    vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
+
+    def _search_one(source_type: str) -> tuple[str, list[dict]]:
+        positional = [source_type, vector_str]
+
+        conn   = hana_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            KNOWLEDGE_SEARCH_SQL.format(top_k=top_k),
+            positional,
+        )
+        cols = ["title", "content", "solution", "release", "agent_based", "joule_based"]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return source_type, rows
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(source_types)) as pool:
+        results = dict(pool.map(_search_one, source_types))
+
+    return results
