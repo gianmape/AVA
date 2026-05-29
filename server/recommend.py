@@ -67,6 +67,7 @@ TARGET_COLS = {
     "documentation":          "Documentation",
     "timeline":               "Timeline",
     "impact":                 "Impact",
+    "solution area":          "Solution Area",
     "ariba next-gen":         "Ariba Next-Gen",
     "value kpis":             "Value KPIs",
 }
@@ -296,17 +297,21 @@ def write_excel_output(
     output_path: str | None = None,
 ) -> str:
     """
-    Copy input Excel and write Joule-synthesized recommendations into target columns.
+    Generate a new fixed-format Excel file with Joule-synthesized recommendations.
+
+    Does NOT modify the input file. Creates a fresh xlsx with columns:
+    Pain Point | Solution | Solution Area (if present) | Recommendations |
+    Category | Effort | Timeline | Benefits | Documentation |
+    Impact | Ariba Next-Gen | Value KPIs
 
     Args:
-        input_path:  Path to the original .xlsx file.
+        input_path:  Path to the original .xlsx (used only to derive output filename).
         rows:        List of row dicts from Joule. Each dict must have:
-                       - idx (int): 0-based row index matching read_excel_painpoints output
-                       - Any subset of: Recommendations, Category, Effort, Benefits,
-                         Documentation, Timeline, Impact
-                     Documentation should be a list of {"title": ..., "url": ...} dicts
-                     or a plain string.
-        output_path: Optional output path; defaults to <input>_RECOMMENDED.xlsx.
+                       - idx (int): row index from read_excel_painpoints
+                       - pain_point, solution (from read_excel_painpoints output)
+                       - Any subset of output fields
+                     Documentation should be a list of {"title": ..., "url": ...} dicts.
+        output_path: Optional output path. Defaults to <input>_RECOMMENDED.xlsx in Downloads.
 
     Returns:
         Absolute path to the written output file.
@@ -318,120 +323,191 @@ def write_excel_output(
     else:
         output_path = str(pathlib.Path(output_path).expanduser().resolve())
 
-    shutil.copy2(input_path, output_path)
+    # Normalise row keys: lowercase + replace _ with space
+    rows = [{k.lower().replace("_", " "): v for k, v in r.items()} for r in rows]
+    rows = sorted(rows, key=lambda r: r.get("idx") or 0)
 
-    # Determine the correct sheet
-    xl = pd.ExcelFile(input_path)
-    sheet = next((r.get("sheet") for r in rows if r.get("sheet")), None) or _find_pain_point_sheet(xl)
+    # --- Backfill pain_point / solution from the source Excel when Joule omits them ---
+    # After key normalisation above, pain_point becomes "pain point" (space, not underscore)
+    _missing_pp  = any(not r.get("pain point") for r in rows)
+    _missing_sol = any(not r.get("solution") for r in rows)
+    if _missing_pp or _missing_sol:
+        try:
+            _source_rows = {
+                int(sr["idx"]): sr
+                for sr in read_excel_painpoints(input_path)
+            }
+            for r in rows:
+                idx = r.get("idx")
+                if idx is not None and int(idx) in _source_rows:
+                    sr = _source_rows[int(idx)]
+                    if not r.get("pain point"):
+                        r["pain point"] = sr.get("pain_point", "")
+                    if not r.get("solution"):
+                        r["solution"] = sr.get("solution", "")
+                    if not r.get("solution area") and sr.get("solution_area"):
+                        r["solution area"] = sr.get("solution_area")
+        except Exception:
+            pass  # non-fatal — columns will just be empty
 
-    # Detect header row offset (same logic as reader)
-    df = xl.parse(sheet, dtype=str)
-    first_row = df.iloc[0].astype(str).str.strip().str.lower()
-    header_row_offset = 0
-    if any(v in first_row.values for v in ("solution", "pain point", "observation/pain point")):
-        header_row_offset = 1
+    # --- Expand short Effort / Timeline labels to full descriptive strings ---
+    _EFFORT_MAP = {
+        "low":     "Low (1 – 3 Days)",
+        "medium":  "Medium (1 – 3 Weeks)",
+        "high":    "High (1 – 2 Months)",
+        "complex": "Complex (3+ Months)",
+    }
+    _TIMELINE_MAP = {
+        "quick win":   "Quick Win (Within 1 week)",
+        "short term":  "Short Term (1 – 3 Weeks)",
+        "mid term":    "Mid Term (1 – 3 Months)",
+        "long term":   "Long Term (3+ Months)",
+    }
+    for r in rows:
+        for field, mapping in (("effort", _EFFORT_MAP), ("timeline", _TIMELINE_MAP)):
+            val = r.get(field)
+            if val:
+                r[field] = mapping.get(val.strip().lower(), val)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        wb = openpyxl.load_workbook(output_path, keep_vba=False)
-    # Remove data validation extensions that openpyxl cannot round-trip
-    ws = wb[sheet]
-    ws.data_validations.dataValidation = []
+    # --- Strip blocked / generic documentation URLs ---
+    _URL_BLOCKLIST = (
+        "https://community.sap.com/topics/ariba",
+        "https://community.sap.com/t5/spend-management",
+        "https://help.sap.com/docs/ARIBA_SOURCING",
+        "https://help.sap.com/docs/ariba_sourcing",
+        "https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
+        "https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance",
+        "https://support.ariba.com",
+    )
+    def _is_blocked(url: str) -> bool:
+        u = url.strip().rstrip("/")
+        for blocked in _URL_BLOCKLIST:
+            if u.lower().startswith(blocked.lower()):
+                # Allow only if there is more path after the blocked prefix
+                remainder = u[len(blocked):]
+                if not remainder or remainder in ("/",):
+                    return True
+        return False
 
-    header_excel_row = header_row_offset + 1
-    col_letter = {}
-    for cell in ws[header_excel_row]:
-        if cell.value:
-            key = str(cell.value).strip().lower()
-            col_letter[key] = cell.column_letter
+    for r in rows:
+        docs = r.get("documentation")
+        if isinstance(docs, list):
+            r["documentation"] = [
+                d for d in docs
+                if not (isinstance(d, dict) and _is_blocked(d.get("url", "")))
+                and not (isinstance(d, str) and _is_blocked(d))
+            ] or None
+        elif isinstance(docs, str):
+            # String form: filter line by line
+            lines = [ln for ln in docs.splitlines() if not _is_blocked(ln)]
+            r["documentation"] = "\n".join(lines) if lines else None
 
-    # Auto-create any output columns that are missing from the header row.
-    # Track canonical names already mapped to avoid duplicates (e.g. "Documentation"
-    # can be reached via both "documentation" and "links to documentation").
-    next_col = ws.max_column + 1
-    already_mapped = set(col_letter.values())  # column letters already assigned
-    canonical_created = set()                   # result_key values already auto-created
+    # Determine output columns — inject Solution Area after Solution if any row has it
+    # Keys must match the normalised form (lowercase, underscores → spaces)
+    output_cols = [
+        ("Pain Point",      "pain point"),
+        ("Solution",        "solution"),
+    ]
+    if any(r.get("solution area") for r in rows):
+        output_cols.append(("Solution Area", "solution area"))
+    output_cols += [
+        ("Recommendations", "recommendations"),
+        ("Category",        "category"),
+        ("Effort",          "effort"),
+        ("Timeline",        "timeline"),
+        ("Benefits",        "benefits"),
+        ("Documentation",   "documentation"),
+        ("Impact",          "impact"),
+        ("Ariba Next-Gen",  "ariba next-gen"),
+        ("Value KPIs",      "value kpis"),
+    ]
 
-    for header_key, result_key in TARGET_COLS.items():
-        if header_key in col_letter:
-            continue  # column already exists under this key
-        if result_key in canonical_created:
-            # Another alias for this result_key was already handled — just point to same letter
-            existing = next(
-                col_letter[k] for k, v in TARGET_COLS.items()
-                if v == result_key and k in col_letter
-            )
-            col_letter[header_key] = existing
-            continue
-        has_value = any(row.get(result_key) for row in rows)
-        if has_value:
-            cell = ws.cell(row=header_excel_row, column=next_col, value=result_key)
-            cell.font = Font(name="Calibri", size=11, bold=True)
-            col_letter[header_key] = cell.column_letter
-            canonical_created.add(result_key)
-            next_col += 1
+    # Corporate style (Quick Reference Card spec)
+    FONT = "Arial"
+    hdr_font  = Font(name=FONT, size=11, bold=True, color="FFFFFF")
+    hdr_fill  = openpyxl.styles.PatternFill("solid", fgColor="00144A")
+    hdr_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    even_font = Font(name=FONT, size=10, color="444444")
+    even_fill = openpyxl.styles.PatternFill("solid", fgColor="D1EFFF")
+    odd_font  = Font(name=FONT, size=10, color="444444")
+    odd_fill  = openpyxl.styles.PatternFill("solid", fgColor="FFFFFF")
+    cell_align = Alignment(vertical="top", wrap_text=True, horizontal="left")
 
-    data_start_excel_row = header_excel_row + 1
+    from openpyxl.styles import Border, Side
+    outer = Side(style="medium", color="002A86")
+    inner = Side(style="thin",   color="EAECEE")
+    n_cols = len(output_cols)
+    total_rows = 1 + len([r for r in rows if r.get("idx") is not None])
 
+    def _border(row_i, col_i):
+        return Border(
+            left   = outer if col_i == 1       else inner,
+            right  = outer if col_i == n_cols  else inner,
+            top    = outer if row_i == 1       else inner,
+            bottom = outer if row_i == total_rows else inner,
+        )
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SVA Analysis"
+
+    # Header row
+    col_widths = {"Pain Point": 45, "Solution": 20, "Solution Area": 25,
+                  "Recommendations": 55, "Category": 18, "Effort": 22,
+                  "Timeline": 22, "Benefits": 45, "Documentation": 45,
+                  "Impact": 14, "Ariba Next-Gen": 45, "Value KPIs": 45}
+
+    for ci, (label, _) in enumerate(output_cols, start=1):
+        cell = ws.cell(row=1, column=ci, value=label)
+        cell.font      = hdr_font
+        cell.fill      = hdr_fill
+        cell.alignment = hdr_align
+        cell.border    = _border(1, ci)
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = col_widths.get(label, 30)
+
+    ws.row_dimensions[1].height = 30
+
+    # Data rows
+    valid_rows = [r for r in rows if r.get("idx") is not None]
     rows_written = 0
-    for row in rows:
-        idx = row.get("idx")
-        if idx is None:
-            continue
-        # Skip rows with no synthesized output
-        has_output = any(row.get(result_key) for result_key in TARGET_COLS.values())
-        if not has_output:
-            continue
-        excel_row  = data_start_excel_row + idx
+    for ri, row in enumerate(valid_rows, start=2):
+        is_even  = (ri % 2 == 0)
+        row_font = even_font if is_even else odd_font
+        row_fill = even_fill if is_even else odd_fill
 
-        wrote_any = False
-        written_letters = set()  # avoid writing the same column twice (alias deduplication)
-        for header_key, result_key in TARGET_COLS.items():
-            letter = col_letter.get(header_key)
-            if not letter:
-                continue
-            if letter in written_letters:
-                continue
-            value = row.get(result_key)
-            if not value:
-                continue
+        for ci, (label, key) in enumerate(output_cols, start=1):
+            value = row.get(key)
 
-            if result_key == "Documentation":
-                if isinstance(value, list):
-                    parts = []
-                    for item in value:
-                        if isinstance(item, dict):
-                            title = item.get("title", "").strip()
-                            url   = item.get("url", "").strip()
-                            block = []
-                            if title:
-                                block.append(title)
-                            if url:
-                                block.append(url)
-                            if block:
-                                parts.append("\n".join(block))
-                        else:
-                            parts.append(str(item).strip())
-                    value = "\n\n".join(parts)
-                cell = ws[f"{letter}{excel_row}"]
-                cell.value = str(value)
-                cell.hyperlink = None
-                cell.style = "Normal"
-                cell.font = Font(name="Calibri", size=11, color="000000", underline="none", bold=False, italic=False)
-                cell.alignment = Alignment(wrap_text=True)
+            # Format Documentation list into plain text
+            if label == "Documentation" and isinstance(value, list):
+                parts = []
+                for item in value:
+                    if isinstance(item, dict):
+                        title = item.get("title", "").strip()
+                        url   = item.get("url", "").strip()
+                        block = []
+                        if title: block.append(title)
+                        if url:   block.append(url)
+                        if block: parts.append("\n".join(block))
+                    else:
+                        parts.append(str(item).strip())
+                value = "\n\n".join(parts) if parts else None
             elif isinstance(value, list):
-                value = "\n".join(value)
-                cell = ws[f"{letter}{excel_row}"]
-                cell.value = str(value)
-            else:
-                cell = ws[f"{letter}{excel_row}"]
-                cell.value = str(value)
-            written_letters.add(letter)
-            wrote_any = True
+                value = "\n".join(str(v) for v in value)
 
-        if wrote_any:
-            rows_written += 1
+            cell = ws.cell(row=ri, column=ci, value=str(value) if value else "")
+            cell.font      = row_font
+            cell.fill      = row_fill
+            cell.alignment = cell_align
+            cell.border    = _border(ri, ci)
 
+            # Strip hyperlinks from Documentation cells
+            if label == "Documentation":
+                cell.hyperlink = None
+
+        rows_written += 1
+
+    ws.freeze_panes = "A2"
     wb.save(output_path)
     return output_path, rows_written
 

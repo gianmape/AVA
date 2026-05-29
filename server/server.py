@@ -81,19 +81,35 @@ LANGUAGE RULE: Each row from read_excel_painpoints includes a `language` field (
 You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba Next-Gen) in that language.
 "es" = Spanish, "en" = English, "pt" = Portuguese. This is mandatory — never override with English.
 
-3. For EACH row, research SAP documentation — HARD LIMIT: no more than 3 sources per pain point.
+3. For EACH row, research SAP documentation — LIMIT: up to 5 sources per pain point.
    ONLY use these sources: help.sap.com, community.sap.com, learning.sap.com, SAP release notes.
    Do NOT use any other external websites, blogs, or non-SAP sources.
    Then synthesize your own original output:
    - Recommendations: actionable steps grounded in your SAP documentation research.
      Do NOT copy from historical cases — use them only to understand what area to explore.
    - Category: one of — Feature Adoption, Innovation, Q&A, Process Change, Training, Roadmap Discussion
-   - Effort: use the full label including description — Low (1 – 3 Days) | Medium (1 – 3 Weeks) | High (1 – 2 Months) | Complex (3+ Months) | N/A
+   - Effort: MANDATORY full label — copy EXACTLY one of these strings, nothing shorter:
+       "Low (1 – 3 Days)" | "Medium (1 – 3 Weeks)" | "High (1 – 2 Months)" | "Complex (3+ Months)" | "N/A"
+       Writing only "High" or "Low" is WRONG — always include the parenthetical description.
    - Benefits: expected business outcome, informed by SAP best practices (same language as pain point)
-   - Documentation: specific, relevant SAP help articles, community posts, or learning resources
-     you found during your research. Return as JSON array of {"title": "...", "url": "..."}.
-     Prioritize specific and actionable links over generic landing pages.
-   - Timeline: use the full label including description — Quick Win (Within 1 week) | Short Term (1 – 3 Weeks) | Mid Term (1 – 3 Months) | Long Term (3+ Months)
+   - Documentation: STRICT QUALITY RULES — ALL four rules must pass or the link is excluded:
+       1. The URL must point to a specific article, guide, or topic page — never a product root or category index.
+       2. The URL path must contain at least 4 segments after the domain.
+          VALID:   https://help.sap.com/docs/ARIBA_SOURCING/b7f99b47e8a14c2ca5b0b571f1a4a099/abc123.html
+          INVALID: https://help.sap.com/docs/ARIBA_SOURCING
+       3. These URLs and any URL that starts with them are BLOCKED — never include them:
+          - https://community.sap.com/topics/ariba
+          - https://community.sap.com/t5/spend-management
+          - https://help.sap.com/docs/ARIBA_SOURCING  (without further path)
+          - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  (without further path)
+          - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance  (without further path)
+          - https://support.ariba.com
+       4. If no documentation meeting all rules exists for a pain point, omit the Documentation field entirely.
+          Do NOT substitute generic links as fallback.
+       Return as JSON array of {"title": "...", "url": "..."}. Title must describe the specific content.
+   - Timeline: MANDATORY full label — copy EXACTLY one of these strings, nothing shorter:
+       "Quick Win (Within 1 week)" | "Short Term (1 – 3 Weeks)" | "Mid Term (1 – 3 Months)" | "Long Term (3+ Months)"
+       Writing only "Long Term" or "Quick Win" is WRONG — always include the parenthetical description.
    - Impact: Low | Medium | High  (use historical signals as a hint)
    - Ariba Next-Gen: based on retrieve_knowledge_context results for this row's idx:
        * The features in next_gen belong to Next-gen SAP Ariba (AI-native platform on SAP BTP, Q1 2026).
@@ -115,7 +131,11 @@ You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba
 4. Call write_excel_output with:
    - input_path: the same attachment path passed to read_excel_painpoints
    - rows: a list containing ONLY the rows from step 3, each with its original idx value.
-     Each row must include: Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen, Value KPIs
+     Each row MUST include ALL of these fields:
+       pain_point (str): copy from read_excel_painpoints output for this row
+       solution (str): copy from read_excel_painpoints output for this row
+       Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen, Value KPIs
+     pain_point and solution must NEVER be empty or omitted — copy them exactly from step 1.
 
 5. After write_excel_output completes, present ONLY this — nothing else:
    a) The message field from write_excel_output.
@@ -180,10 +200,21 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    - source_types: ["next_gen", "vlm_kpis"]
 
 3. After both tools return, synthesize the full recommendation for this single pain point.
-   Research SAP documentation — HARD LIMIT: no more than 3 sources.
+   Research SAP documentation — LIMIT: up to 5 sources.
    ONLY use these sources: help.sap.com, community.sap.com, learning.sap.com, SAP release notes.
    Do NOT use any other external websites, blogs, or non-SAP sources.
    Generate ALL text in the same language as the pain_point.
+   Documentation STRICT QUALITY RULES — ALL four rules must pass or the link is excluded:
+     1. The URL must point to a specific article, guide, or topic page — never a product root or category index.
+     2. The URL path must contain at least 4 segments after the domain.
+     3. These URLs and any URL that starts with them are BLOCKED:
+        - https://community.sap.com/topics/ariba
+        - https://community.sap.com/t5/spend-management
+        - https://help.sap.com/docs/ARIBA_SOURCING  (without further path)
+        - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  (without further path)
+        - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance  (without further path)
+        - https://support.ariba.com
+     4. If no specific documentation is found, omit the Documentation section entirely — no generic fallbacks.
 
 4. Present the result using ONLY this card format — no extra text before or after:
 
