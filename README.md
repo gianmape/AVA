@@ -1,6 +1,6 @@
 # AVA — Autonomous Value Advisory
 
-Turn years of SAP Ariba consultant knowledge into instant, evidence-backed recommendations.
+Turn years of SAP Solution Value Advisory knowledge into instant, evidence-backed recommendations.
 
 AVA (Autonomous Value Advisory) is an MCP server that connects Joule Desktop to two SAP HANA Cloud vector indexes: a historical pain point library and an internal knowledge base (Next-gen roadmap features + VLM KPIs). Given a client's pain points Excel, Joule retrieves semantically similar cases, enriches them with roadmap and KPI context, synthesizes actionable recommendations, and writes a formatted output Excel — all orchestrated through MCP tool calls.
 
