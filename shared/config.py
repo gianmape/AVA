@@ -168,17 +168,28 @@ def normalise_solution(value: str | None) -> str | None:
     if stripped in canonical_map:
         return canonical_map[stripped]
 
-    # 2b. Handle abbreviated canonical names (e.g. "Ariba Invoice" -> "Invoice Mgmnt")
-    _PREFIX_ALIASES = {
-        "invoice":        "invoice mgmnt",
-        "supplier risk":  "risk",
-        "risk":           "risk",
-        "catalog":        "catalog",
-        "overall":        "overall",
-        "reporting":      "reporting",
+    # 2b. Explicit aliases for names that fuzzy-match poorly
+    _EXPLICIT_ALIASES = {
+        # SLP — long-form names never fuzzy-match "ariba slp"
+        "supplier lifecycle performance":               "Ariba SLP",
+        "supplier lifecycle and performance":           "Ariba SLP",
+        "supplier lifecycle management":                "Ariba SLP",
+        "slp":                                         "Ariba SLP",
+        # Supplier Risk
+        "supplier risk":                               "Ariba Supplier Risk",
+        "risk":                                        "Ariba Supplier Risk",
+        # Invoice
+        "invoice":                                     "Ariba Invoice",
+        "invoicing":                                   "Ariba Invoice",
+        # Others
+        "catalog":                                     "Ariba Catalog",
+        "guided buying":                               "Ariba Guided Buying",
+        "spend control tower":                         "Spend Analysis",
     }
-    if stripped in _PREFIX_ALIASES and _PREFIX_ALIASES[stripped] in canonical_map:
-        return canonical_map[_PREFIX_ALIASES[stripped]]
+    if stripped in _EXPLICIT_ALIASES:
+        return _EXPLICIT_ALIASES[stripped]
+    if raw_norm in _EXPLICIT_ALIASES:
+        return _EXPLICIT_ALIASES[raw_norm]
 
     # 3. Fuzzy match on original (high cutoff to avoid false positives)
     close = difflib.get_close_matches(raw_norm, canonical_map.keys(), n=1, cutoff=0.82)
