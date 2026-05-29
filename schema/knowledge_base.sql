@@ -16,11 +16,14 @@ CREATE COLUMN TABLE SVA2.KNOWLEDGE_BASE (
     AGENT_BASED  NVARCHAR(3),               -- next_gen: Yes | No
     JOULE_BASED  NVARCHAR(3),               -- next_gen: Yes | No
     -- VLM KPI fields (populated only for source_type = 'vlm_kpis')
-    VALUE_DRIVER NVARCHAR(200),             -- e.g. Cost Reduction, Process Efficiency
-    VALUE_LEVER  NVARCHAR(500),             -- specific lever activated
-    KPI_ID       NVARCHAR(50),              -- SAP APM KPI Catalog ID (e.g. KBSRM00701)
-    KPI_CATEGORY NVARCHAR(100),             -- Throughput | Backlog | Process Progress | Changes | Master Data
-    KPI_TARGET   NVARCHAR(1000),            -- typical benchmark / target
+    VALUE_DRIVER  NVARCHAR(200),             -- e.g. Cost Reduction, Process Efficiency
+    VALUE_LEVER   NVARCHAR(500),             -- specific lever activated
+    KPI_ID        NVARCHAR(50),              -- SAP APM KPI Catalog ID (e.g. KBSRM00701)
+    KPI_CATEGORY  NVARCHAR(100),             -- Throughput | Backlog | Process Progress | Changes | Master Data
+    KPI_TARGET    NVARCHAR(1000),            -- KPI Catalog link / typical benchmark
+    CAPABILITY    NVARCHAR(2000),            -- Ariba capability / recommendation enabling this KPI
+    KPI_FORMULA   NVARCHAR(2000),            -- formula or calculation for the KPI
+    KPI_MEAS_FREQ NVARCHAR(100),             -- measurement frequency (Daily, Weekly, Monthly…)
     SOURCE_FILE  NVARCHAR(200),
     CREATED_AT   TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
     EMBEDDING    REAL_VECTOR(3072)
@@ -35,3 +38,6 @@ CREATE INDEX IDX_KB_SOLUTION    ON SVA2.KNOWLEDGE_BASE (SOLUTION);
 -- ALTER TABLE SVA2.KNOWLEDGE_BASE ADD (KPI_ID       NVARCHAR(50));
 -- ALTER TABLE SVA2.KNOWLEDGE_BASE ADD (KPI_CATEGORY NVARCHAR(100));
 -- ALTER TABLE SVA2.KNOWLEDGE_BASE ADD (KPI_TARGET   NVARCHAR(1000));
+-- ALTER TABLE SVA2.KNOWLEDGE_BASE ADD (KPI_FORMULA  NVARCHAR(2000));
+-- ALTER TABLE SVA2.KNOWLEDGE_BASE ADD (CAPABILITY   NVARCHAR(2000));
+-- ALTER TABLE SVA2.KNOWLEDGE_BASE ADD (KPI_MEAS_FREQ NVARCHAR(100));

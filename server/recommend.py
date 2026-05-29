@@ -52,7 +52,8 @@ UPDATE_USE_COUNT_SQL = "UPDATE SVA2.PAIN_POINTS SET USE_COUNT = USE_COUNT + 1 WH
 KNOWLEDGE_SEARCH_SQL = """
 SELECT TOP {top_k}
     TITLE, CONTENT, SOLUTION, RELEASE, AGENT_BASED, JOULE_BASED,
-    VALUE_DRIVER, VALUE_LEVER, KPI_ID, KPI_CATEGORY, KPI_TARGET
+    VALUE_DRIVER, VALUE_LEVER, KPI_ID, KPI_CATEGORY, KPI_TARGET,
+    CAPABILITY, KPI_FORMULA, KPI_MEAS_FREQ
 FROM SVA2.KNOWLEDGE_BASE
 WHERE SOURCE_TYPE = ?
 ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
@@ -543,7 +544,8 @@ def retrieve_knowledge_context(
             positional,
         )
         cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
-                "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target"]
+                "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
+                "capability", "kpi_formula", "kpi_meas_freq"]
         rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
         cursor.close()
         conn.close()

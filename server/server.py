@@ -123,9 +123,13 @@ You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba
    - Value KPIs: based on the vlm_kpis results from retrieve_knowledge_context for this row's idx.
        * Available for: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk.
          For other solutions write "No KPI data available for this solution."
-       * If relevant KPIs found: for each KPI write a single line:
-         [KPI Name] (ID: [kpi_id]) — [value_driver] · [value_lever] | Target: [kpi_target]
-         List up to 3 KPIs ordered by relevance. Omit any KPI where kpi_id or kpi_target is null.
+       * If relevant KPIs found: for each KPI write a block using EXACTLY this format (use literal newlines between lines):
+         ▸ **[KPI Name]** · [kpi_category]
+           🎯 Driver: [value_driver]  |  Lever: [value_lever]
+           ⚙ Capability: [capability]
+           📐 Formula: [kpi_formula]
+           🕐 Frequency: [kpi_meas_freq]  |  ID: [kpi_id]
+         Separate each KPI block with a blank line. List up to 3 KPIs ordered by relevance. Omit ID line if kpi_id is null.
        * If no relevant KPIs: write exactly "No Value KPIs identified."
 
 4. Call write_excel_output with:
@@ -259,10 +263,13 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 [Rules for this section:
  1. Only populate when validated_solution is one of: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk — for other solutions write: "No KPI data available for this solution."
  2. If vlm_kpis results are empty, write: "No Value KPIs identified for this pain point."
- 3. If relevant KPIs found, list up to 3 using EXACTLY this format — one bullet per KPI:
-    • [KPI Name] (ID: [kpi_id]) — [value_driver] · [value_lever]
-      Measure: [content / formula]
-      Target: [kpi_target]
+ 3. If relevant KPIs found, list up to 3 using EXACTLY this format — one block per KPI (use literal newlines):
+    ▸ **[KPI Name]** · [kpi_category]
+      🎯 Driver: [value_driver]  |  Lever: [value_lever]
+      ⚙ Capability: [capability]
+      📐 Formula: [kpi_formula]
+      🕐 Frequency: [kpi_meas_freq]  |  ID: [kpi_id]
+    Separate each KPI block with a blank line. Omit the ID line if kpi_id is null.
  4. After the KPI list, add one line: "Source: SAP APM KPI Catalog — me.sap.com/app/kpicatalog"
 ---
 
@@ -539,7 +546,7 @@ def retrieve_knowledge_context(
     Returns:
         JSON dict keyed by source_type. Each value is a list of matching entries.
         next_gen entries: {title, content, solution, release, agent_based, joule_based}
-        vlm_kpis entries: {title, content, value_driver, value_lever, kpi_id, kpi_category, kpi_target}
+        vlm_kpis entries: {title, content, value_driver, value_lever, kpi_id, kpi_category, kpi_target, capability, kpi_formula, kpi_meas_freq}
         Empty list means no relevant entries found — use the "no coverage" message.
     """
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | pain_point=%.80s…",
