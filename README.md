@@ -1,4 +1,4 @@
-# AVA — Autonomous Value Advisory
+<img src="ava_logo.svg" alt="AVA — Autonomous Value Advisory" width="320" />
 
 Turn years of SAP Solution Value Advisory knowledge into instant, evidence-backed recommendations.
 
