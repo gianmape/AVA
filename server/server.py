@@ -47,7 +47,7 @@ from server.recommend import (
 from shared.config import hana_connection, normalise_solution
 
 mcp = FastMCP(
-    "painpoints",
+    "ava",
     stateless_http=True,
     instructions="""
 When a user says "Run SVA Analysis" or attaches a pain points Excel file:
