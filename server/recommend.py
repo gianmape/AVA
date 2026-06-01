@@ -56,6 +56,7 @@ SELECT TOP {top_k}
     CAPABILITY, KPI_FORMULA, KPI_MEAS_FREQ
 FROM SVA2.KNOWLEDGE_BASE
 WHERE SOURCE_TYPE = ?
+{solution_filter}
 ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
 """
 
@@ -530,26 +531,45 @@ def retrieve_knowledge_context(
     Empty list means no relevant entries found for that source type.
     """
     import concurrent.futures
+    import logging
+    log = logging.getLogger("sva2")
 
-    query_vector = embed_text(pain_point)
+    try:
+        query_vector = embed_text(pain_point)
+    except Exception as e:
+        log.error("   retrieve_knowledge_context: embed_text failed: %s", e, exc_info=True)
+        return {st: [] for st in source_types}
+
     vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
 
     def _search_one(source_type: str) -> tuple[str, list[dict]]:
-        positional = [source_type, vector_str]
+        # For vlm_kpis, filter by solution so KPIs from other solutions don't
+        # crowd out the top_k results (e.g. SLP's 16 rows vs Buying's 29 rows).
+        # next_gen has no solution filter — global search is intentional there.
+        if source_type == "vlm_kpis" and solution:
+            solution_filter = "AND SOLUTION = ?"
+            positional = [source_type, solution, vector_str]
+        else:
+            solution_filter = ""
+            positional = [source_type, vector_str]
 
-        conn   = hana_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            KNOWLEDGE_SEARCH_SQL.format(top_k=top_k),
-            positional,
-        )
-        cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
-                "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
-                "capability", "kpi_formula", "kpi_meas_freq"]
-        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
-        cursor.close()
-        conn.close()
-        return source_type, rows
+        try:
+            conn   = hana_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=solution_filter),
+                positional,
+            )
+            cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
+                    "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
+                    "capability", "kpi_formula", "kpi_meas_freq"]
+            rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            cursor.close()
+            conn.close()
+            return source_type, rows
+        except Exception as e:
+            log.error("   _search_one[%s] failed: %s", source_type, e, exc_info=True)
+            return source_type, []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(source_types)) as pool:
         results = dict(pool.map(_search_one, source_types))

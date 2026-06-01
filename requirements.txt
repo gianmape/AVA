@@ -1,3 +1,4 @@
+wheel                           # required for legacy packages like langdetect
 generative-ai-hub-sdk==4.12.4  # SAP official SDK — handles AI Core auth automatically
 pandas>=2.0.0
 openpyxl>=3.1.0
@@ -6,3 +7,4 @@ python-dotenv>=1.0.0
 requests>=2.31.0                # used only for SAP domain-scoped web search tool
 mcp==1.9.4                      # MCP server framework; pinned for pydantic 2.10.6 compatibility
 uvicorn>=0.29.0                 # ASGI server for SSE transport on CF
+langdetect>=1.0.9               # language detection for pain point rows

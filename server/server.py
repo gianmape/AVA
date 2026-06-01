@@ -62,16 +62,22 @@ STRICT TOOL POLICY — only the following MCP tools may be used. No other tools,
 Do NOT execute terminal commands, read local files directly, run Python scripts, or use any non-MCP tool.
 Do NOT read JSON files from Joule Desktop temp directories or any other location.
 
-1. Call read_excel_painpoints with the path of the attached file.
-   Do NOT read the file yourself. Do NOT add rows beyond what this tool returns.
+1. Call read_excel_painpoints with the path of the attached file and NO offset/limit first.
+   This returns ALL rows and the total count. Do NOT read the file yourself.
+   If total_rows > 10, you MUST process in batches of 10:
+     - Batch 1: call read_excel_painpoints with offset=0, limit=10
+     - Batch 2: call read_excel_painpoints with offset=10, limit=10
+     - Continue until offset >= total_rows
+   Process each batch fully (steps 2 through 4) before starting the next batch.
+   If total_rows <= 10, process all rows in a single pass.
 
-2. Call retrieve_similar_cases_batch ONCE with ALL rows returned from step 1.
-   Pass the full list — do NOT call it once per row.
+2. For the current batch, call retrieve_similar_cases_batch ONCE with ALL rows in the batch.
+   Pass the full batch list — do NOT call it once per row.
    The returned cases are directional signals from human experts — NOT the answer.
    Use similar_pain_point and comments to understand what SAP area to research.
    Use category, effort, timeline, impact as calibration hints for your classifications.
 
-2.5 Call retrieve_knowledge_context ONCE with ALL rows as separate calls — one per row:
+2.5 Call retrieve_knowledge_context for each row in the current batch (one call per row):
    - pain_point: the pain point text of each row
    - solution: the solution of each row
    - source_types: ["next_gen", "vlm_kpis"] — always include both
@@ -134,14 +140,15 @@ You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba
 
 4. Call write_excel_output with:
    - input_path: the same attachment path passed to read_excel_painpoints
-   - rows: a list containing ONLY the rows from step 3, each with its original idx value.
+   - rows: a list containing ONLY the rows from this batch, each with its original idx value.
      Each row MUST include ALL of these fields:
        pain_point (str): copy from read_excel_painpoints output for this row
        solution (str): copy from read_excel_painpoints output for this row
        Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen, Value KPIs
      pain_point and solution must NEVER be empty or omitted — copy them exactly from step 1.
+   Call write_excel_output once per batch — do NOT wait until all batches are done.
 
-5. After write_excel_output completes, present ONLY this — nothing else:
+5. After ALL batches are processed and all write_excel_output calls complete, present ONLY this — nothing else:
    a) The message field from write_excel_output.
    b) A KPI dashboard block. No pain point descriptions, no recommendations, no per-row details.
       NEVER list individual pain points or their content.
@@ -220,7 +227,8 @@ When a user describes a pain point in text (without attaching an Excel file), ac
         - https://support.ariba.com
      4. If no specific documentation is found, omit the Documentation section entirely — no generic fallbacks.
 
-4. Present the result using ONLY this card format — no extra text before or after:
+4. Present the result using ONLY this card format — no extra text before or after.
+   DO NOT use Markdown tables anywhere in this card. Use only bold labels, bullets, and plain text.
 
 ---
 **Pain Point:** [original pain point text]
@@ -233,13 +241,10 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 [expected business outcome]
 
 **SVA Analysis**
-
-| Field | Value | Short Description |
-|---|---|---|
-| Category | [classified value] | Feature Adoption: not using an existing feature · Innovation: new or non-standard approach · Training: lack of knowledge or incorrect usage · Process Change: redesign of a business process · Q&A: informational question with a documented answer · Roadmap Discussion: future SAP feature may address this |
-| Effort | [full label with description] | |
-| Timeline | [full label with description] | |
-| Impact | To be assessed | To be assessed by the consultant based on the client's specific context and priorities |
+- **Category:** [classified value] — [one-line description of the classified value only]
+- **Effort:** [full label with description]
+- **Timeline:** [full label with description]
+- **Impact:** To be assessed by the consultant based on the client's specific context and priorities
 
 **Documentation:**
 - [Article title](url)
@@ -257,7 +262,7 @@ When a user describes a pain point in text (without attaching an Excel file), ac
  After the context block, list each relevant feature using EXACTLY this format — one bullet per feature:
  • [title] (Release: [release][, Agent-based][, Joule-based]) — [one sentence on how it addresses the pain point]
  Include "Agent-based" in the parenthesis ONLY if agent_based = "Yes". Include "Joule-based" ONLY if joule_based = "Yes". Omit both tags if both are "No".
- Never omit Release.
+ Never omit Release.]
 
 **Value KPIs:**
 [Rules for this section:
@@ -270,50 +275,62 @@ When a user describes a pain point in text (without attaching an Excel file), ac
       📐 Formula: [kpi_formula]
       🕐 Frequency: [kpi_meas_freq]  |  ID: [kpi_id]
     Separate each KPI block with a blank line. Omit the ID line if kpi_id is null.
- 4. After the KPI list, add one line: "Source: SAP APM KPI Catalog — me.sap.com/app/kpicatalog"
+ 4. After the KPI list, add one line: "Source: SAP APM KPI Catalog — me.sap.com/app/kpicatalog"]
 ---
 
    Rules for the card:
+   - DO NOT use Markdown tables — no pipes, no |---|---| separators anywhere in the output
    - Category must be one of: Feature Adoption, Innovation, Q&A, Process Change, Training, Roadmap Discussion
+   - Category description (one line only, matching the classified value):
+       Feature Adoption → "not using an existing feature that would solve the pain point"
+       Innovation → "new or non-standard approach beyond current configuration"
+       Training → "lack of knowledge or incorrect usage — recommendation is educational"
+       Process Change → "redesign of a business process, not just a system change"
+       Q&A → "informational question with a documented answer"
+       Roadmap Discussion → "future SAP feature may address this — requires monitoring"
    - Effort must use the full label: Low (1 – 3 Days) | Medium (1 – 3 Weeks) | High (1 – 2 Months) | Complex (3+ Months) | N/A
    - Timeline must use the full label: Quick Win (Within 1 week) | Short Term (1 – 3 Weeks) | Mid Term (1 – 3 Months) | Long Term (3+ Months)
-   - Impact: ALWAYS use "To be assessed" as value — never classify Low/Medium/High
-   - Short Description column: write ONLY the description that matches the classified value, not all options
+   - Impact: ALWAYS use "To be assessed" — never classify Low/Medium/High
    - Documentation: list only specific, actionable links — no generic landing pages
    - Do NOT show a KPI dashboard for single queries
 """,
 )
-log.info("=== painpoints MCP server starting ===")
+log.info("=== AVA MCP server starting ===")
 
 
 @mcp.tool()
-def read_excel_painpoints(input_path: str) -> str:
+def read_excel_painpoints(
+    input_path: str,
+    offset: int = 0,
+    limit: int = 0,
+) -> str:
     """
-    Read the attached Excel file and return all pain point rows as JSON.
+    Read the attached Excel file and return pain point rows as JSON.
 
-    Pass the path of the attached file as input_path.
-    Use this first — it identifies the correct sheet automatically and filters
-    out empty rows. Only process the rows this tool returns.
-    Returns a JSON array where each element has:
-      - idx (int): row index, used later in write_excel_output
-      - pain_point (str): the pain point text
-      - solution (str): canonical SAP Ariba solution name
-      - solution_area (str | null): functional area within the solution if provided
-      - sheet (str): sheet name where the data was found
-      - language (str): detected language code (e.g. "es", "en", "pt")
-                        ALL generated text for this row MUST be in this language.
+    Call first with no offset/limit to get total_rows. If total_rows > 10,
+    process in batches: call again with offset=0 limit=10, then offset=10 limit=10, etc.
+
+    Returns a JSON object with:
+      - total_rows (int): total number of rows in the file (always present)
+      - rows (list): the requested slice of rows, each with:
+          idx (int), pain_point (str), solution (str),
+          solution_area (str|null), sheet (str), language (str)
 
     Args:
         input_path: Path to the attached .xlsx file.
+        offset:     Skip this many rows from the start (default 0).
+        limit:      Return at most this many rows (default 0 = all rows).
     """
     input_path = str(pathlib.Path(input_path).expanduser().resolve())
-    log.info(">> read_excel_painpoints called | path=%s", input_path)
+    log.info(">> read_excel_painpoints called | path=%s | offset=%d | limit=%d", input_path, offset, limit)
     if not pathlib.Path(input_path).exists():
         log.warning("   File not found: %s", input_path)
         return json.dumps({"error": f"File not found: {input_path}"})
-    rows = _read_excel(input_path)
-    log.info("   Returned %d rows", len(rows))
-    return json.dumps(rows, ensure_ascii=False)
+    all_rows = _read_excel(input_path)
+    total = len(all_rows)
+    sliced = all_rows[offset:offset + limit] if limit > 0 else all_rows[offset:]
+    log.info("   total=%d | returning %d rows (offset=%d limit=%d)", total, len(sliced), offset, limit)
+    return json.dumps({"total_rows": total, "rows": sliced}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -523,6 +540,11 @@ def query_single_pain_point(pain_point: str, solution: str) -> str:
     }, ensure_ascii=False)
 
 
+_VLM_SOLUTIONS = {
+    "Ariba Sourcing", "Ariba Buying", "Ariba Contracts", "Ariba SLP", "Ariba Supplier Risk",
+}
+
+
 @mcp.tool()
 def retrieve_knowledge_context(
     pain_point: str,
@@ -538,9 +560,9 @@ def retrieve_knowledge_context(
     Args:
         pain_point:   Pain point text (same as passed to query_single_pain_point).
         solution:     Canonical solution name (validated_solution from query_single_pain_point result).
-        source_types: Knowledge sources to query. Supported: ["next_gen", "vlm_kpis"]
+        source_types: Knowledge sources to query. Always pass ["next_gen", "vlm_kpis"].
                       "next_gen": Next-gen SAP Ariba roadmap features (all solutions)
-                      "vlm_kpis": Value Lever & KPI index (Ariba Sourcing only)
+                      "vlm_kpis": Value Lever & KPI index (Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk)
                       Future sources: "ai_scenarios", "premium_services"
 
     Returns:
@@ -549,6 +571,10 @@ def retrieve_knowledge_context(
         vlm_kpis entries: {title, content, value_driver, value_lever, kpi_id, kpi_category, kpi_target, capability, kpi_formula, kpi_meas_freq}
         Empty list means no relevant entries found — use the "no coverage" message.
     """
+    # Always include vlm_kpis for solutions that have KPI data — do not rely on Joule passing it.
+    if solution in _VLM_SOLUTIONS and "vlm_kpis" not in source_types:
+        source_types = list(source_types) + ["vlm_kpis"]
+
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | pain_point=%.80s…",
              solution, source_types, pain_point)
     results = _retrieve_knowledge(pain_point, solution, source_types, top_k=5)

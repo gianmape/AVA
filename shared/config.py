@@ -85,17 +85,38 @@ COLUMN_ALIASES = {
 # The SDK reads AI Core credentials from:
 #   ~/.aicore/config.json  OR  AICORE_* environment variables
 # ---------------------------------------------------------------------------
+_embedding_url    = None
 _embedding_client = None
 
+import logging as _logging
+_log = _logging.getLogger("sva2")
 
-def _get_embedding_proxy():
-    global _embedding_client
-    if _embedding_client is None:
-        _embedding_client = get_proxy_client(
-            "gen-ai-hub",
-            deployment_id=os.environ["EMBEDDING_DEPLOYMENT_ID"],
-        )
-    return _embedding_client
+
+def _init_embedding():
+    """
+    Build the embedding endpoint URL and proxy client once at startup.
+
+    Constructs the URL directly from env vars to avoid calling
+    select_deployment(), which makes a blocking HTTP call to the AI Core API
+    with no timeout and hangs indefinitely on Cloud Foundry.
+
+    URL pattern: {AICORE_BASE_URL}/v2/inference/deployments/{DEPLOYMENT_ID}/models/{MODEL}:predict
+
+    NOTE: We cache the URL and proxy client but NOT the auth headers.
+    OAuth tokens expire (typically after 12 hours). Calling pc.request_header
+    on each embed_text() invocation ensures we always use a fresh token.
+    """
+    global _embedding_url, _embedding_client
+    if _embedding_url is not None:
+        return
+
+    base   = os.environ["AICORE_BASE_URL"].rstrip("/")
+    dep_id = os.environ["EMBEDDING_DEPLOYMENT_ID"]
+    model  = os.environ["EMBEDDING_MODEL_NAME"]
+    _embedding_url    = f"{base}/v2/inference/deployments/{dep_id}/models/{model}:predict"
+    _embedding_client = get_proxy_client("gen-ai-hub", deployment_id=dep_id)
+
+    _log.info("   _init_embedding: ready — %s", _embedding_url)
 
 
 # ---------------------------------------------------------------------------
@@ -109,16 +130,17 @@ def embed_text(text: str) -> list[float]:
       POST .../models/gemini-embedding:predict
       body: {"instances": [{"content": "<text>"}]}
     """
-    pc = _get_embedding_proxy()
-    deployment = pc.select_deployment(deployment_id=os.environ["EMBEDDING_DEPLOYMENT_ID"])
-    url = deployment.url + f"/models/{os.environ['EMBEDDING_MODEL_NAME']}:predict"
-    headers = dict(pc.request_header)
-    headers["Content-Type"] = "application/json"
+    _init_embedding()
+    # Fetch a fresh token on every call — cached tokens expire after ~12 hours
+    # and cause "Bad credentials" errors without re-initialisation.
+    headers = {**dict(_embedding_client.request_header), "Content-Type": "application/json"}
     body = {"instances": [{"content": text}]}
-
-    response = _requests.post(url, headers=headers, json=body)
+    _log.info("   embed_text: POST %s", _embedding_url)
+    response = _requests.post(_embedding_url, headers=headers, json=body, timeout=30)
     response.raise_for_status()
-    return response.json()["predictions"][0]["embeddings"]["values"]
+    values = response.json()["predictions"][0]["embeddings"]["values"]
+    _log.info("   embed_text: OK (%d dims)", len(values))
+    return values
 
 
 # ---------------------------------------------------------------------------
