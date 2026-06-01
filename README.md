@@ -6,9 +6,30 @@
 
 Turn years of SAP Solution Value Advisory knowledge into instant, evidence-backed recommendations.
 
-AVA (Autonomous Value Advisory) is an MCP server that connects Joule Desktop to two SAP HANA Cloud vector indexes: a historical pain point library and an internal knowledge base (Next-gen roadmap features + VLM KPIs). Given a client's pain points Excel, Joule retrieves semantically similar cases, enriches them with roadmap and KPI context, synthesizes actionable recommendations, and writes a formatted output Excel — all orchestrated through MCP tool calls.
 
-<img src="data/images/icon.png" alt="AVA Icon" width="120" />
+AVA (Autonomous Value Advisory) AVA elevates value advisory inside Joule Work Desktop. It contextualizes client pain points using SVA’s historical library of real Ariba cases, enriches with Next‑Gen Ariba roadmap features and VLM KPIs, and returns prioritized recommendations with effort, timeline, and quantified benefits. AVA helps SVA reduce prep time, increase proposal quality, and anchor narratives in measurable outcomes. Multilingual and SAP‑native, it fits directly into your day-to-day advisory work
+
+## Why now
+- Joule Work Desktop brings an always‑on conversational assistant to the desktop — no browser, instant context switching.
+- The difference-maker is context. AVA operationalizes SVA’s expert knowledge and fuses it with Product’s roadmap and VLM metrics to deliver recommendations that are specific and defensible.
+## The challenge for SVA
+- Great value narratives require speed, depth, and evidence. Generic AI misses context; scattered assets slow teams down; proposals often lack quantified outcomes.
+## What AVA is
+- An MCP server on SAP BTP Cloud Foundry connecting Joule Desktop to two SAP HANA Cloud vector indexes:
+    - A historical pain point library of real SAP Ariba cases (by solution and functional area).
+    - An internal knowledge base with 83 Next‑Gen Ariba features and 86 VLM KPIs across 5 solutions (Buying, Sourcing, Contracts, SLP, Supplier Risk).
+## How it works
+- Given a client pain points Excel or a single chat query, AVA runs semantic similarity search (cosine similarity in HANA Vector Engine), enriches with roadmap features and VLM KPIs, synthesizes prioritized recommendations with category, effort, timeline, and benefits, and outputs a ready‑to‑deliver Excel or an instant analysis card in chat.
+## Why it matters
+- Faster prep, higher consistency, and metric‑anchored proposals that increase credibility and win rates.
+- Structured feedback loop from the field — which pains occur most, where roadmap features map to pains, and where gaps remain.
+## Status and roadmap
+- Limited pilot with selected employees; presented at SAP’s flagship event.
+- Multilingual (English, Spanish, Portuguese, and any language Joule supports).
+- Next: expert‑in‑the‑loop learning and expansion to Fieldglass and additional solutions.
+## Native SAP stack
+- Gemini Embedding via SAP AI Core, HANA Cloud Vector Engine as the store, Joule Desktop as the reasoning layer, MCP streamable‑HTTP as the protocol.
+
 ---
 ## Architecture
 
