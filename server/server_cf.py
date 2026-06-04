@@ -34,12 +34,18 @@ log = logging.getLogger("sva2.cf")
 from dotenv import load_dotenv
 load_dotenv()
 
+# CF runs single query mode only — sequential HANA access, never parallel.
+# Pool of 2 is sufficient and avoids opening 10 idle connections on startup.
+# Uses setdefault so an explicit HANA_POOL_SIZE in .env is always respected.
+import os as _os
+_os.environ.setdefault("HANA_POOL_SIZE", "2")
+
 from mcp.server.fastmcp import FastMCP
 from server.recommend import (
     retrieve_similar_cases as _retrieve,
     retrieve_knowledge_context as _retrieve_knowledge,
 )
-from shared.config import hana_connection, normalise_solution
+from shared.config import hana_connection, normalise_solution, release_connection
 
 mcp = FastMCP(
     "ava",
@@ -54,24 +60,31 @@ SHARED RULES:
   Timeline:  "Quick Win (Within 1 week)" | "Short Term (1 – 3 Weeks)" | "Mid Term (1 – 3 Months)" | "Long Term (3+ Months)"
   Category:  Feature Adoption | Innovation | Q&A | Process Change | Training | Roadmap Discussion
   Language:  write ALL generated text in the same language as the pain point (es/en/pt). Never override with English.
-  Docs BLOCKED urls (never include these or any sub-path):
-    community.sap.com/topics/ariba | community.sap.com/t5/spend-management
-    help.sap.com/docs/ARIBA_SOURCING (root only) | help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE (root only)
-    help.sap.com/docs/ariba-supplier-lifecycle-and-performance (root only) | support.ariba.com
-  Docs VALID: URL must reach a specific article (≥4 path segments). If none qualify, omit Documentation entirely.
+  Docs BLOCKED patterns (never include URLs matching any of these):
+    help.sap.com product roots: help.sap.com/docs/ARIBA_SOURCING (root only) | help.sap.com/docs/ARIBA_CONTRACTS (root only) | help.sap.com/docs/ariba-contracts (root only) | help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE (root only) | help.sap.com/docs/ariba-supplier-lifecycle-and-performance (root only)
+    SAP Community landing pages: community.sap.com/topics/ (any sub-path) | community.sap.com/t5/<board>/ct-p/<anything> (portal category pages) | community.sap.com/t5/spend-management | community.sap.com/t5/ariba (unless next segment is td-p or ta-p)
+    Always blocked: support.ariba.com (any path) | learning.sap.com (entire domain — every URL is unreliable)
+  Docs VALID: URL must reach a specific article (≥4 path segments after domain). NEVER guess or construct a URL — only use URLs returned by a web search. If no search was done or no article found, omit Documentation entirely.
   Next-gen:  Features belong to Next-gen SAP Ariba (AI-native, SAP BTP, Q1 2026) — NOT available today, requires transition.
              Format: • [title] (Release: [release][, Agent-based][, Joule-based]) — [one sentence]. No features → "No Next-gen coverage identified."
   KPI format (up to 3, solutions: Ariba Sourcing/Buying/Contracts/SLP/Supplier Risk only):
+    If vlm_kpis results are present, ALWAYS list them — do NOT filter by relevance. List up to 3 ordered by closest match to the pain point context.
     ▸ **[KPI Name]** · [kpi_category]
       🎯 Driver: [value_driver]  |  Lever: [value_lever]
       ⚙ Capability: [capability]
       📐 Formula: [kpi_formula]
       🕐 Frequency: [kpi_meas_freq]  |  ID: [kpi_id]
-    No KPIs → "No Value KPIs identified." | Other solutions → "No KPI data available for this solution."
+    Empty results → "No Value KPIs identified." | Other solutions → "No KPI data available for this solution."
     After KPI list add: "📎 Source: SAP APM KPI Catalog — me.sap.com/app/kpicatalog"
 
 ---
 SINGLE QUERY MODE:
+
+0. MULTI-POINT DETECTION (before anything else):
+   If the input contains multiple distinct pain points (numbered/bulleted list, separate paragraphs,
+   connectors like "también"/"además"/"also"/"another issue"), split them and process each
+   independently — run steps 1–4 for each one and present a separate card per pain point.
+   If only one pain point: proceed to step 1.
 
 1. Infer solution from text if clear; otherwise show numbered list and wait for user choice:
    1.Ariba Buying 2.Ariba Catalog 3.Commerce Automation 4.Ariba Contracts 5.Business Network
@@ -81,9 +94,12 @@ SINGLE QUERY MODE:
 2. Call query_single_pain_point(pain_point, solution).
    Then immediately call retrieve_knowledge_context(pain_point, validated_solution, ["next_gen","vlm_kpis"]).
 
-3. Synthesize. Search SAP documentation to find specific article URLs — max 5 sources (help.sap.com, community.sap.com, SAP release notes only).
+3. MANDATORY: Perform 1 web search to find a specific SAP documentation URL before synthesizing the card.
+   Search for a specific help.sap.com article or community.sap.com post relevant to the pain point.
+   Only use: help.sap.com, community.sap.com, SAP release notes (max 5 links).
    Similar cases do NOT replace documentation search — use them only to calibrate category/effort/timeline/impact.
-   Do NOT search learning.sap.com — those URLs are unreliable.
+   Do NOT use learning.sap.com — the ENTIRE domain is blocked, every URL on it is unreliable.
+   NEVER construct or guess a URL — only include URLs returned by the search. If no specific article found, omit Documentation entirely.
 
 4. Present using ONLY this card — no extra text, no Markdown tables:
 
@@ -235,6 +251,14 @@ def retrieve_knowledge_context(
     total = sum(len(v) for v in results.values())
     log.info("   Returned %d entries across %d source(s)", total, len(source_types))
 
+    # Strip 'content' from vlm_kpis entries only — they have structured fields sufficient
+    # for synthesis. next_gen entries keep 'content' (the feature description text).
+    results = {
+        st: (entries if st == "next_gen"
+             else [{k: v for k, v in e.items() if k != "content"} for e in entries])
+        for st, entries in results.items()
+    }
+
     payload = {
         "IMPORTANT_CONTEXT": {
             "next_gen_warning": (
@@ -270,7 +294,7 @@ def list_ingested_solutions() -> str:
         rows = cursor.fetchall()
     finally:
         cursor.close()
-        conn.close()
+        release_connection(conn)
 
     if not rows:
         return "No data ingested yet."

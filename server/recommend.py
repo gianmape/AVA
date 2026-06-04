@@ -32,6 +32,7 @@ from shared.config import (
     clean_str,
     embed_text,
     hana_connection,
+    release_connection,
     VALID_SOLUTIONS,
     normalise_solution_area,
     normalise_solution,
@@ -49,8 +50,6 @@ WHERE SOLUTION = ?
 {area_filter}
 ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
 """
-
-UPDATE_USE_COUNT_SQL = "UPDATE SVA2.PAIN_POINTS SET USE_COUNT = USE_COUNT + 1 WHERE ID = ?"
 
 KNOWLEDGE_SEARCH_SQL = """
 SELECT TOP {top_k}
@@ -76,6 +75,79 @@ TARGET_COLS = {
     "ariba next-gen":         "Ariba Next-Gen",
     "value kpis":             "Value KPIs",
 }
+
+# Pre-lowercased and pre-stripped URL prefixes blocked from documentation output.
+# Built once at import time — _is_blocked() does no repeated .lower() calls.
+_URL_BLOCKLIST = tuple(p.lower().rstrip("/") for p in (
+    "https://community.sap.com/topics/",
+    "https://community.sap.com/t5/spend-management",
+    "https://community.sap.com/t5/ariba",
+    "https://support.ariba.com",
+    "https://support.sap.com",
+    "https://learning.sap.com",         # entire domain blocked — all URLs are unreliable
+    # help.sap.com /docs/ product roots
+    "https://help.sap.com/docs/ARIBA_SOURCING",
+    "https://help.sap.com/docs/ariba_sourcing",
+    "https://help.sap.com/docs/ariba-sourcing",
+    "https://help.sap.com/docs/ARIBA_CONTRACTS",
+    "https://help.sap.com/docs/ariba_contracts",
+    "https://help.sap.com/docs/ariba-contracts",
+    "https://help.sap.com/docs/ARIBA_BUYING",
+    "https://help.sap.com/docs/ariba_buying",
+    "https://help.sap.com/docs/ariba-buying",
+    "https://help.sap.com/docs/ARIBA_INVOICE",
+    "https://help.sap.com/docs/ariba_invoice",
+    "https://help.sap.com/docs/ariba-invoice",
+    "https://help.sap.com/docs/ARIBA_GUIDED_BUYING",
+    "https://help.sap.com/docs/ariba_guided_buying",
+    "https://help.sap.com/docs/ariba-guided-buying",
+    "https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
+    "https://help.sap.com/docs/ariba_supplier_lifecycle_and_performance",
+    "https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance",
+    "https://help.sap.com/docs/SAP_ARIBA",
+    "https://help.sap.com/docs/sap_ariba",
+    "https://help.sap.com/docs/sap-ariba",
+    "https://help.sap.com/docs/SAP_ANALYTICS_CLOUD",
+    "https://help.sap.com/docs/sap_analytics_cloud",
+    "https://help.sap.com/docs/sap-analytics-cloud",
+    # help.sap.com /viewer/product/ roots — same products, legacy URL format
+    "https://help.sap.com/viewer/product/ARIBA_SOURCING",
+    "https://help.sap.com/viewer/product/ariba_sourcing",
+    "https://help.sap.com/viewer/product/ARIBA_CONTRACTS",
+    "https://help.sap.com/viewer/product/ariba_contracts",
+    "https://help.sap.com/viewer/product/ARIBA_BUYING",
+    "https://help.sap.com/viewer/product/ariba_buying",
+    "https://help.sap.com/viewer/product/ARIBA_INVOICE",
+    "https://help.sap.com/viewer/product/ariba_invoice",
+    "https://help.sap.com/viewer/product/ARIBA_GUIDED_BUYING",
+    "https://help.sap.com/viewer/product/ariba_guided_buying",
+    "https://help.sap.com/viewer/product/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
+    "https://help.sap.com/viewer/product/ariba_supplier_lifecycle_and_performance",
+    "https://help.sap.com/viewer/product/SAP_ARIBA",
+    "https://help.sap.com/viewer/product/sap_ariba",
+))
+
+
+def _is_blocked(url: str) -> bool:
+    u = url.strip().rstrip("/").lower()
+    if any(u.startswith(blocked) for blocked in _URL_BLOCKLIST):
+        return True
+    # Block SAP Community portal category pages: /t5/<board>/ct-p/<anything>
+    if "community.sap.com/t5/" in u and "/ct-p/" in u:
+        return True
+    # Block help.sap.com product roots — any URL with fewer than 4 path segments after domain.
+    # Valid article URLs have the form: /docs/<product>/<lang_or_guid>/<topic_id>[.html]
+    # Root URLs have the form: /docs/<product> or /viewer/product/<product> — 2-3 segments only.
+    if "help.sap.com" in u:
+        try:
+            from urllib.parse import urlparse
+            path = urlparse(u).path.strip("/")
+            segments = [s for s in path.split("/") if s]
+            if len(segments) < 4:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +218,8 @@ def read_excel_painpoints(input_path: str) -> list[dict]:
     if "solution" not in df.columns:
         raise ValueError("Input file must contain a 'Solution' column.")
 
-    rows = []
+    # Pre-process all rows into dicts, filtering out blanks
+    raw_rows = []
     for idx, row in df.iterrows():
         pain_point = clean_str(row.get("pain_point"))
         solution   = clean_str(row.get("solution"))
@@ -156,18 +229,29 @@ def read_excel_painpoints(input_path: str) -> list[dict]:
             (s for s in VALID_SOLUTIONS if s.lower() == solution.lower()),
             solution,
         )
-        try:
-            lang = _detect_lang(pain_point)
-        except LangDetectException:
-            lang = "en"
-        rows.append({
-            "idx":          int(idx),
-            "pain_point":   pain_point,
-            "solution":     solution_matched,
+        raw_rows.append({
+            "idx":           int(idx),
+            "pain_point":    pain_point,
+            "solution":      solution_matched,
             "solution_area": normalise_solution_area(clean_str(row.get("solution_area"))),
-            "sheet":        sheet,
-            "language":     lang,
+            "sheet":         sheet,
         })
+
+    # Detect language for all rows in parallel
+    import concurrent.futures
+
+    def _detect(pain_point: str) -> str:
+        try:
+            return _detect_lang(pain_point)
+        except LangDetectException:
+            return "en"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(raw_rows), 8)) as pool:
+        langs = list(pool.map(_detect, [r["pain_point"] for r in raw_rows]))
+
+    rows = []
+    for r, lang in zip(raw_rows, langs):
+        rows.append({**r, "language": lang})
 
     return rows
 
@@ -208,12 +292,18 @@ def retrieve_similar_cases(
                 "effort", "benefits", "timeline", "impact"]
         raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-        for r in raw:
-            cursor.execute(UPDATE_USE_COUNT_SQL, (r["id"],))
+        # Increment USE_COUNT in a single bulk UPDATE instead of N individual queries
+        if raw:
+            ids = [r["id"] for r in raw]
+            placeholders = ",".join("?" * len(ids))
+            cursor.execute(
+                f"UPDATE SVA2.PAIN_POINTS SET USE_COUNT = USE_COUNT + 1 WHERE ID IN ({placeholders})",
+                ids,
+            )
         conn.commit()
     finally:
         cursor.close()
-        conn.close()
+        release_connection(conn)
 
     rows = [
         {
@@ -338,59 +428,27 @@ def write_excel_output(
                 r[field] = mapping.get(val.strip().lower(), val)
 
     # --- Strip blocked / generic documentation URLs ---
-    # These are root/category pages that return 404 or are not specific articles.
-    # Any URL that starts with one of these prefixes is blocked unconditionally.
-    _URL_BLOCKLIST = (
-        "https://community.sap.com/topics/ariba",
-        "https://community.sap.com/t5/spend-management",
-        "https://community.sap.com/t5/ariba",
-        "https://support.ariba.com",
-        "https://support.sap.com",
-        "https://learning.sap.com/learning-journeys",  # model hallucinates these — always 404
-        # help.sap.com/docs/<PRODUCT> roots — blocked regardless of sub-path (model hallucinates sub-paths)
-        "https://help.sap.com/docs/ARIBA_SOURCING",
-        "https://help.sap.com/docs/ariba_sourcing",
-        "https://help.sap.com/docs/ariba-sourcing",
-        "https://help.sap.com/docs/ARIBA_CONTRACTS",
-        "https://help.sap.com/docs/ariba_contracts",
-        "https://help.sap.com/docs/ariba-contracts",
-        "https://help.sap.com/docs/ARIBA_BUYING",
-        "https://help.sap.com/docs/ariba_buying",
-        "https://help.sap.com/docs/ariba-buying",
-        "https://help.sap.com/docs/ARIBA_INVOICE",
-        "https://help.sap.com/docs/ariba_invoice",
-        "https://help.sap.com/docs/ariba-invoice",
-        "https://help.sap.com/docs/ARIBA_GUIDED_BUYING",
-        "https://help.sap.com/docs/ariba_guided_buying",
-        "https://help.sap.com/docs/ariba-guided-buying",
-        "https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
-        "https://help.sap.com/docs/ariba_supplier_lifecycle_and_performance",
-        "https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance",
-        "https://help.sap.com/docs/SAP_ARIBA",
-        "https://help.sap.com/docs/sap_ariba",
-        "https://help.sap.com/docs/sap-ariba",
-        "https://help.sap.com/docs/SAP_ANALYTICS_CLOUD",
-        "https://help.sap.com/docs/sap_analytics_cloud",
-        "https://help.sap.com/docs/sap-analytics-cloud",
-    )
-    def _is_blocked(url: str) -> bool:
-        u = url.strip().rstrip("/").lower()
-        for blocked in _URL_BLOCKLIST:
-            if u.startswith(blocked.lower()):
-                return True
-        return False
-
     for r in rows:
         docs = r.get("documentation")
+        if docs:
+            log.info("   RAW documentation (idx=%s): %r", r.get("idx"), docs)
         if isinstance(docs, list):
-            r["documentation"] = [
-                d for d in docs
-                if not (isinstance(d, dict) and _is_blocked(d.get("url", "")))
-                and not (isinstance(d, str) and _is_blocked(d))
-            ] or None
+            kept = []
+            for d in docs:
+                url = d.get("url", "") if isinstance(d, dict) else d
+                if _is_blocked(str(url)):
+                    log.info("   BLOCKED url (list): %s", url)
+                else:
+                    kept.append(d)
+            r["documentation"] = kept or None
         elif isinstance(docs, str):
             # String form: filter line by line
-            lines = [ln for ln in docs.splitlines() if not _is_blocked(ln)]
+            lines = []
+            for ln in docs.splitlines():
+                if _is_blocked(ln):
+                    log.info("   BLOCKED url (str): %s", ln)
+                else:
+                    lines.append(ln)
             r["documentation"] = "\n".join(lines) if lines else None
 
     # Determine output columns — inject Solution Area after Solution if any row has it
@@ -505,8 +563,41 @@ def write_excel_output(
 
 
 # ---------------------------------------------------------------------------
-# Knowledge base retrieval
+# Knowledge base retrieval — batch variant
 # ---------------------------------------------------------------------------
+def retrieve_knowledge_context_batch(
+    items: list[dict],
+    source_types: list[str] | None = None,
+    top_k: int = 5,
+) -> dict:
+    """
+    Search SVA2.KNOWLEDGE_BASE for all items in parallel.
+
+    items: list of {idx, pain_point, solution}
+    source_types: knowledge sources to query (default ["next_gen", "vlm_kpis"])
+
+    Returns a dict keyed by idx. Each value is the same structure as
+    retrieve_knowledge_context: {source_type: [entries, ...], ...}
+    """
+    import concurrent.futures
+
+    if source_types is None:
+        source_types = ["next_gen", "vlm_kpis"]
+
+    def _process_one(item):
+        idx        = item["idx"]
+        pain_point = item["pain_point"]
+        solution   = item["solution"]
+        results    = retrieve_knowledge_context(pain_point, solution, source_types, top_k=top_k)
+        return idx, results
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(items), 10)) as pool:
+        pairs = list(pool.map(_process_one, items))
+
+    return {idx: results for idx, results in pairs}
+
+
+
 def retrieve_knowledge_context(
     pain_point: str,
     solution: str,
@@ -557,7 +648,7 @@ def retrieve_knowledge_context(
                 rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
             finally:
                 cursor.close()
-                conn.close()
+                release_connection(conn)
             return source_type, rows
         except Exception as e:
             log.error("   _search_one[%s] failed: %s", source_type, e, exc_info=True)

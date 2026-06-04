@@ -10,6 +10,7 @@ import os
 import difflib
 import unicodedata
 import re
+import time as _time
 import requests as _requests
 from dotenv import load_dotenv
 from hdbcli import dbapi
@@ -62,6 +63,29 @@ VALID_CATEGORIES = {
 VALID_EFFORTS   = {"Low", "Medium", "High", "Complex", "N/A"}
 VALID_TIMELINES = {"Quick Win", "Short Term", "Mid Term", "Long Term"}
 VALID_IMPACTS   = {"Low", "Medium", "High", "N/A"}
+
+# Pre-computed normalised lookup maps — built once at import time from the
+# constants above so normalise_solution / normalise_solution_area never
+# reconstruct them on every call.
+_SOLUTION_CANONICAL_MAP = {_normalise_str(v): v for v in VALID_SOLUTIONS}
+_SOLUTION_AREA_CANONICAL_MAP = {_normalise_str(v): v for v in VALID_SOLUTION_AREAS}
+_EXPLICIT_ALIASES = {
+    # SLP — long-form names never fuzzy-match "ariba slp"
+    "supplier lifecycle performance":       "Ariba SLP",
+    "supplier lifecycle and performance":   "Ariba SLP",
+    "supplier lifecycle management":        "Ariba SLP",
+    "slp":                                  "Ariba SLP",
+    # Supplier Risk
+    "supplier risk":                        "Ariba Supplier Risk",
+    "risk":                                 "Ariba Supplier Risk",
+    # Invoice
+    "invoice":                              "Ariba Invoice",
+    "invoicing":                            "Ariba Invoice",
+    # Others
+    "catalog":                              "Ariba Catalog",
+    "guided buying":                        "Ariba Guided Buying",
+    "spend control tower":                  "Spend Analysis",
+}
 
 # Columns to drop — row numbering/IDs from Excel that have no analytical value
 IGNORE_COLUMNS = {"id", "no", "no.", "n°", "#", "num", "num.", "número", "numero"}
@@ -139,24 +163,55 @@ def embed_text(text: str) -> list[float]:
     Gemini Embedding uses the Vertex AI predict format:
       POST .../models/gemini-embedding:predict
       body: {"instances": [{"content": "<text>"}]}
+
+    Retries up to 3 times with exponential backoff on 429 (rate limit) errors,
+    which can occur when multiple parallel calls hit the endpoint simultaneously.
     """
     _init_embedding()
-    # Fetch a fresh token on every call — cached tokens expire after ~12 hours
-    # and cause "Bad credentials" errors without re-initialisation.
     headers = {**dict(_embedding_client.request_header), "Content-Type": "application/json"}
     body = {"instances": [{"content": text}]}
-    _log.info("   embed_text: POST %s", _embedding_url)
-    response = _requests.post(_embedding_url, headers=headers, json=body, timeout=30)
-    response.raise_for_status()
-    values = response.json()["predictions"][0]["embeddings"]["values"]
-    _log.info("   embed_text: OK (%d dims)", len(values))
-    return values
+
+    last_exc = None
+    for attempt in range(3):
+        if attempt > 0:
+            delay = 2 ** attempt  # 2s, 4s
+            _log.warning("   embed_text: 429 rate limit — retry %d/3 in %ds", attempt + 1, delay)
+            _time.sleep(delay)
+        _log.info("   embed_text: POST %s", _embedding_url)
+        response = _requests.post(_embedding_url, headers=headers, json=body, timeout=30)
+        if response.status_code == 429:
+            last_exc = response
+            continue
+        response.raise_for_status()
+        values = response.json()["predictions"][0]["embeddings"]["values"]
+        _log.info("   embed_text: OK (%d dims)", len(values))
+        return values
+
+    # All retries exhausted — raise the last 429 response as an HTTPError
+    last_exc.raise_for_status()
 
 
 # ---------------------------------------------------------------------------
-# HANA Cloud connection
+# HANA Cloud connection pool
 # ---------------------------------------------------------------------------
-def hana_connection():
+# hdbcli has no built-in pool. We use a queue.Queue of pre-opened connections
+# so parallel threads (ThreadPoolExecutor in batch functions) reuse connections
+# instead of paying TCP+TLS+HANA auth overhead (~100–300 ms) on every call.
+#
+# Pool size defaults to 10 — matches max_workers in batch executors (server.py).
+# server_cf.py overrides this to 2 via os.environ.setdefault before first use,
+# since CF runs single query mode only (sequential, never parallel).
+# Override with HANA_POOL_SIZE env var in .env to tune for your deployment.
+
+import queue as _queue
+import threading as _threading
+
+_pool: "_queue.Queue[dbapi.Connection] | None" = None
+_pool_lock = _threading.Lock()
+_pool_size = 0
+
+
+def _make_connection() -> "dbapi.Connection":
     ssl_validate = os.environ.get("HANA_SSL_VALIDATE", "true").strip().lower() != "false"
     return dbapi.connect(
         address=os.environ["HANA_HOST"],
@@ -166,6 +221,63 @@ def hana_connection():
         encrypt=True,
         sslValidateCertificate=ssl_validate,
     )
+
+
+def _init_pool() -> None:
+    global _pool, _pool_size
+    if _pool is not None:
+        return
+    with _pool_lock:
+        if _pool is not None:
+            return
+        size = int(os.environ.get("HANA_POOL_SIZE", 10))
+        _pool_size = size
+        q: "_queue.Queue[dbapi.Connection]" = _queue.Queue(maxsize=size)
+        for _ in range(size):
+            q.put(_make_connection())
+        _pool = q
+        _log.info("   HANA connection pool initialised — size=%d", size)
+
+
+def hana_connection() -> "dbapi.Connection":
+    """
+    Return a pooled HANA connection.
+
+    Usage — callers MUST return the connection when done:
+        conn = hana_connection()
+        try:
+            ...
+        finally:
+            release_connection(conn)
+
+    The pool is initialised lazily on the first call.
+    Broken connections are replaced transparently.
+    """
+    _init_pool()
+    assert _pool is not None
+    conn = _pool.get()
+    # Validate — replace silently if the connection was dropped
+    try:
+        conn.isconnected()
+    except Exception:
+        _log.warning("   HANA pool: stale connection detected, replacing")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = _make_connection()
+    return conn
+
+
+def release_connection(conn: "dbapi.Connection") -> None:
+    """Return a connection to the pool. Call in a finally block."""
+    if _pool is not None and not _pool.full():
+        _pool.put(conn)
+    else:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -182,50 +294,31 @@ def normalise_solution(value: str | None) -> str | None:
     if not value:
         return None
 
-    canonical_map = {_normalise_str(v): v for v in VALID_SOLUTIONS}
-
     # 1. Exact match
     raw_norm = _normalise_str(value)
-    if raw_norm in canonical_map:
-        return canonical_map[raw_norm]
+    if raw_norm in _SOLUTION_CANONICAL_MAP:
+        return _SOLUTION_CANONICAL_MAP[raw_norm]
 
     # 2. Strip common prefixes and try exact match again
     stripped = re.sub(r"^(sap ariba |ariba )", "", raw_norm).strip()
-    if stripped in canonical_map:
-        return canonical_map[stripped]
+    if stripped in _SOLUTION_CANONICAL_MAP:
+        return _SOLUTION_CANONICAL_MAP[stripped]
 
     # 2b. Explicit aliases for names that fuzzy-match poorly
-    _EXPLICIT_ALIASES = {
-        # SLP — long-form names never fuzzy-match "ariba slp"
-        "supplier lifecycle performance":               "Ariba SLP",
-        "supplier lifecycle and performance":           "Ariba SLP",
-        "supplier lifecycle management":                "Ariba SLP",
-        "slp":                                         "Ariba SLP",
-        # Supplier Risk
-        "supplier risk":                               "Ariba Supplier Risk",
-        "risk":                                        "Ariba Supplier Risk",
-        # Invoice
-        "invoice":                                     "Ariba Invoice",
-        "invoicing":                                   "Ariba Invoice",
-        # Others
-        "catalog":                                     "Ariba Catalog",
-        "guided buying":                               "Ariba Guided Buying",
-        "spend control tower":                         "Spend Analysis",
-    }
     if stripped in _EXPLICIT_ALIASES:
         return _EXPLICIT_ALIASES[stripped]
     if raw_norm in _EXPLICIT_ALIASES:
         return _EXPLICIT_ALIASES[raw_norm]
 
     # 3. Fuzzy match on original (high cutoff to avoid false positives)
-    close = difflib.get_close_matches(raw_norm, canonical_map.keys(), n=1, cutoff=0.82)
+    close = difflib.get_close_matches(raw_norm, _SOLUTION_CANONICAL_MAP.keys(), n=1, cutoff=0.82)
     if close:
-        return canonical_map[close[0]]
+        return _SOLUTION_CANONICAL_MAP[close[0]]
 
     # 4. Fuzzy match on stripped prefix version
-    close = difflib.get_close_matches(stripped, canonical_map.keys(), n=1, cutoff=0.82)
+    close = difflib.get_close_matches(stripped, _SOLUTION_CANONICAL_MAP.keys(), n=1, cutoff=0.82)
     if close:
-        return canonical_map[close[0]]
+        return _SOLUTION_CANONICAL_MAP[close[0]]
 
     return None
 
@@ -245,16 +338,15 @@ def normalise_solution_area(value: str | None) -> str | None:
         return value
 
     raw_norm = _normalise_str(value)
-    canonical_map = {_normalise_str(v): v for v in VALID_SOLUTION_AREAS}
 
     # 1. Exact accent-insensitive match
-    if raw_norm in canonical_map:
-        return canonical_map[raw_norm]
+    if raw_norm in _SOLUTION_AREA_CANONICAL_MAP:
+        return _SOLUTION_AREA_CANONICAL_MAP[raw_norm]
 
     # 2. Fuzzy match
-    close = difflib.get_close_matches(raw_norm, canonical_map.keys(), n=1, cutoff=0.75)
+    close = difflib.get_close_matches(raw_norm, _SOLUTION_AREA_CANONICAL_MAP.keys(), n=1, cutoff=0.75)
     if close:
-        return canonical_map[close[0]]
+        return _SOLUTION_AREA_CANONICAL_MAP[close[0]]
 
     # Graceful degradation: unknown area passes through unchanged
     return value

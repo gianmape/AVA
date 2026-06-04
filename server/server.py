@@ -44,7 +44,7 @@ from server.recommend import (
     write_excel_output as _write_excel,
     retrieve_knowledge_context as _retrieve_knowledge,
 )
-from shared.config import hana_connection, normalise_solution
+from shared.config import hana_connection, normalise_solution, release_connection
 
 mcp = FastMCP(
     "ava",
@@ -77,79 +77,26 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
    Use similar_pain_point and comments to understand what SAP area to research.
    Use category, effort, timeline, impact as calibration hints for your classifications.
 
-2.5 Call retrieve_knowledge_context for each row in the current batch (one call per row):
-   - pain_point: the pain point text of each row
-   - solution: the solution of each row
-   - source_types: ["next_gen", "vlm_kpis"] — always include both
-   Store the results indexed by idx for use in step 3.
+2.5 For EACH row individually, in sequence:
+   a) Call retrieve_knowledge_context with:
+      - pain_point: the row's pain_point text
+      - solution: the row's solution
+      - source_types: ["next_gen", "vlm_kpis"]
+   b) Perform 1 web search to find a specific SAP documentation article for this row's pain point.
+      Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
+      ONLY use: help.sap.com, community.sap.com, SAP release notes.
+      Do NOT use learning.sap.com — the ENTIRE domain is blocked, every URL on it is unreliable.
+      Hard cap: MAX 15 searches per batch run. If cap is reached, set documentation=[] for remaining rows.
+      A qualifying URL must come from the actual search result (never constructed or guessed) and have
+      at least 4 path segments after the domain. If no qualifying URL found → documentation=[].
+   c) Synthesize the full output for this row using your SAP knowledge, the tool result, and the search result.
+      LANGUAGE RULE: each row includes a `language` field ("es", "en", "pt"). Write ALL generated text
+      for that row in that language. "es"=Spanish · "en"=English · "pt"=Portuguese. Never override with English.
+   Repeat a–c for every row before calling write_excel_output.
 
-3. For EACH row, synthesize your own original output using your SAP knowledge and the tool results above.
+   DO NOT call retrieve_knowledge_context_batch — use retrieve_knowledge_context once per row as described above.
 
-   LANGUAGE RULE (mandatory): each row includes a `language` field ("es", "en", "pt").
-   Write ALL generated text for that row — Recommendations, Benefits, Ariba Next-Gen, Value KPIs — in that language.
-   "es" = Spanish · "en" = English · "pt" = Portuguese. Never override with English regardless of your default.
-
-   WEB SEARCH POLICY:
-   - Budget: MAX 3 web searches for the ENTIRE batch run.
-   - Purpose: search ONLY to find specific documentation URLs — not to build recommendations.
-   - Similar cases from retrieve_similar_cases do NOT replace documentation search.
-     Use similar cases only to calibrate category/effort/timeline/impact.
-   - Search for documentation when: you do not have a verified specific URL for this pain point topic AND budget not exhausted.
-   - ONLY use these sources: help.sap.com, community.sap.com, SAP release notes.
-   - Do NOT search learning.sap.com — those URLs are unreliable.
-   - If budget exhausted or search finds no specific article → omit Documentation entirely for that row.
-   - Recommendations: actionable steps grounded in your SAP documentation research.
-     Do NOT copy from historical cases — use them only to understand what area to explore.
-   - Category: one of — Feature Adoption, Innovation, Q&A, Process Change, Training, Roadmap Discussion
-   - Effort: MANDATORY full label — copy EXACTLY one of these strings, nothing shorter:
-       "Low (1 – 3 Days)" | "Medium (1 – 3 Weeks)" | "High (1 – 2 Months)" | "Complex (3+ Months)" | "N/A"
-       Writing only "High" or "Low" is WRONG — always include the parenthetical description.
-   - Benefits: expected business outcome, informed by SAP best practices (same language as pain point)
-   - Documentation: STRICT QUALITY RULES — ALL four rules must pass or the link is excluded:
-       1. The URL must point to a specific article, guide, or topic page — never a product root or category index.
-       2. The URL path must contain at least 4 segments after the domain.
-          VALID:   https://help.sap.com/docs/ARIBA_SOURCING/b7f99b47e8a14c2ca5b0b571f1a4a099/abc123.html
-          INVALID: https://help.sap.com/docs/ARIBA_SOURCING
-       3. These URLs and any URL that starts with them are BLOCKED — never include them:
-          - https://community.sap.com/topics/ariba
-          - https://community.sap.com/t5/spend-management
-          - https://community.sap.com/t5/ariba
-          - https://help.sap.com/docs/ARIBA_SOURCING  (without further path)
-          - https://help.sap.com/docs/ARIBA_CONTRACTS  (without further path)
-          - https://help.sap.com/docs/ariba-contracts  (without further path)
-          - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  (without further path)
-          - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance  (without further path)
-          - https://support.ariba.com
-          - https://learning.sap.com/learning-journeys  (these are always 404)
-       4. If no documentation meeting all rules exists for a pain point, omit the Documentation field entirely.
-          Do NOT substitute generic links as fallback.
-       Return as JSON array of {"title": "...", "url": "..."}. Title must describe the specific content.
-   - Timeline: MANDATORY full label — copy EXACTLY one of these strings, nothing shorter:
-       "Quick Win (Within 1 week)" | "Short Term (1 – 3 Weeks)" | "Mid Term (1 – 3 Months)" | "Long Term (3+ Months)"
-       Writing only "Long Term" or "Quick Win" is WRONG — always include the parenthetical description.
-   - Impact: Low | Medium | High  (use historical signals as a hint)
-   - Ariba Next-Gen: based on retrieve_knowledge_context results for this row's idx:
-       * The features in next_gen belong to Next-gen SAP Ariba (AI-native platform on SAP BTP, Q1 2026).
-         They are NOT available in the current platform — client must transition first (Greenfield or Brownfield).
-         No new contract needed — delivered under existing subscriptions.
-         NEVER present these as immediately available.
-       * Write ONLY the feature names, Release, and Agent-based/Joule-based tags (if Yes) — no introductory context block, no warnings, no disclaimers.
-       * If relevant features found: write a concise text explaining which Next-gen feature(s) address this pain point.
-         For each feature include: name, Release, and — ONLY if the value is "Yes" — mention Agent-based and/or Joule-based explicitly.
-       * If no relevant features: write exactly "No Next-gen coverage identified."
-   - Value KPIs: based on the vlm_kpis results from retrieve_knowledge_context for this row's idx.
-       * Available for: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk.
-         For other solutions write "No KPI data available for this solution."
-       * If relevant KPIs found: for each KPI write a block using EXACTLY this format (use literal newlines between lines):
-         ▸ **[KPI Name]** · [kpi_category]
-           🎯 Driver: [value_driver]  |  Lever: [value_lever]
-           ⚙ Capability: [capability]
-           📐 Formula: [kpi_formula]
-           🕐 Frequency: [kpi_meas_freq]  |  ID: [kpi_id]
-         Separate each KPI block with a blank line. List up to 3 KPIs ordered by relevance. Omit ID line if kpi_id is null.
-       * If no relevant KPIs: write exactly "No Value KPIs identified."
-
-4. Call write_excel_output with:
+3. Call write_excel_output with:
    - input_path: the same attachment path passed to read_excel_painpoints
    - rows: a list containing ONLY the rows from this batch, each with its original idx value.
      Each row MUST include ALL of these fields:
@@ -161,7 +108,7 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
                Pass the exact same text you already generated in step 3 — do NOT translate or rewrite to English.
    Call write_excel_output once per batch — do NOT wait until all batches are done.
 
-5. After ALL batches are processed and all write_excel_output calls complete, present ONLY this — nothing else:
+4. After ALL batches are processed and all write_excel_output calls complete, present ONLY this — nothing else:
    a) The message field from write_excel_output.
    b) A KPI dashboard block. No pain point descriptions, no recommendations, no per-row details.
       NEVER list individual pain points or their content.
@@ -197,6 +144,24 @@ SINGLE PAIN POINT QUERY MODE
 
 When a user describes a pain point in text (without attaching an Excel file), activate single query mode.
 
+0. MULTI-POINT DETECTION (do this before anything else):
+   Read the user's input and determine whether it contains more than one distinct pain point.
+   Signals that indicate multiple pain points:
+     - Numbered or bulleted list (1. ... 2. ... / • ... • ...)
+     - Separate paragraphs each describing a different problem
+     - Explicit connectors: "también", "además", "otro problema", "also", "another issue", "secondly"
+     - Distinct subjects or SAP modules mentioned in the same message
+
+   IF multiple pain points are detected:
+     - Split the input into individual pain points. Each item must be self-contained — do NOT split
+       items that are part of the same problem description.
+     - Process each pain point independently, following steps 1 through 4 below for EACH one.
+     - Generate a separate complete card for each pain point.
+     - Present all cards sequentially in the response, separated by a blank line between cards.
+     - Do NOT aggregate or merge the cards into a dashboard — that is for batch Excel mode only.
+
+   IF only a single pain point is detected: proceed directly to step 1.
+
 1. Determine the solution:
    - If the solution can be clearly inferred from the pain point text, use it directly — do NOT ask for confirmation.
    - If the solution is ambiguous or cannot be determined, present the numbered list and ask the user to choose:
@@ -222,25 +187,35 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    - pain_point: same text as step 2
    - solution: copy the exact value of "validated_solution" from the query_single_pain_point JSON result — do NOT use the original user input or any other value
    - source_types: ["next_gen", "vlm_kpis"]
+   The result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "vlm_kpis": [...]}}.
+   Access next_gen features as: result["results"]["next_gen"]
+   Access KPIs as: result["results"]["vlm_kpis"]
 
 3. After both tools return, synthesize the full recommendation for this single pain point.
-   Search SAP documentation to find specific article URLs — LIMIT: up to 5 sources.
-   Similar cases from query_single_pain_point do NOT replace documentation search — use them only to calibrate category/effort/timeline/impact.
-   ONLY use these sources: help.sap.com, community.sap.com, SAP release notes.
+   MANDATORY: Perform 1 web search to find specific SAP documentation URLs before generating the card.
+   Search for a specific help.sap.com article or community.sap.com post relevant to this pain point.
+   ONLY use these sources: help.sap.com, community.sap.com, SAP release notes. Max 5 links.
    Do NOT search learning.sap.com — those URLs are unreliable.
    Do NOT use any other external websites, blogs, or non-SAP sources.
+   If the search returns no qualifying URL, omit Documentation entirely — do NOT construct or guess a URL.
    Generate ALL text in the same language as the pain_point.
    Documentation STRICT QUALITY RULES — ALL four rules must pass or the link is excluded:
      1. The URL must point to a specific article, guide, or topic page — never a product root or category index.
      2. The URL path must contain at least 4 segments after the domain.
-     3. These URLs and any URL that starts with them are BLOCKED:
-        - https://community.sap.com/topics/ariba
-        - https://community.sap.com/t5/spend-management
-        - https://help.sap.com/docs/ARIBA_SOURCING  (without further path)
-        - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  (without further path)
-        - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance  (without further path)
-        - https://support.ariba.com
-     4. If no specific documentation is found, omit the Documentation section entirely — no generic fallbacks.
+     3. These URL patterns are BLOCKED:
+        help.sap.com roots:
+          - https://help.sap.com/docs/ARIBA_SOURCING  (blocked unless followed by /guid/guid)
+          - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE
+          - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance
+        SAP Community portal landing pages:
+          - https://community.sap.com/topics/  (any URL starting with this)
+          - https://community.sap.com/t5/  followed by board slug then /ct-p/  (e.g. /t5/sap-ariba/ct-p/ariba)
+          - https://community.sap.com/t5/spend-management
+          - https://community.sap.com/t5/ariba  (unless the next segment is td-p or ta-p)
+        Always blocked:
+          - https://support.ariba.com
+     4. NEVER guess or construct a URL — only include URLs that came from a web search result.
+        If the search returned no specific article → omit the Documentation section entirely.
 
 4. Present the result using ONLY this card format — no extra text before or after.
    DO NOT use Markdown tables anywhere in this card. Use only bold labels, bullets, and plain text.
@@ -279,7 +254,7 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 [CRITICAL RULES FOR THIS SECTION — violations are not acceptable:
  1. NEVER present Next-gen features as available today or recommend them for immediate use.
  2. ALWAYS start this section with the context block below (translated to the pain point language) BEFORE listing any feature.
- 3. If retrieve_knowledge_context returns an empty list, write only: "No Next-gen feature identified for this pain point in the current roadmap."
+ 3. Read features from result["results"]["next_gen"]. If the list is empty, write only: "No Next-gen feature identified for this pain point in the current roadmap."
 
  MANDATORY context block (always first, always present when features are listed):
  "⚠ The following features belong to Next-gen SAP Ariba — a fully re-engineered AI-native platform built on SAP BTP, released Q1 2026. These capabilities are NOT available in the current-generation platform. Accessing them requires a transition (Greenfield or Brownfield migration). No new contract is needed — Next-gen is delivered under existing subscriptions, but readiness and complexity must be assessed first."
@@ -293,8 +268,8 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 📐 **VALUE KPIs**
 [Rules for this section:
  1. Only populate when validated_solution is one of: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk — for other solutions write: "No KPI data available for this solution."
- 2. If vlm_kpis results are empty, write: "No Value KPIs identified for this pain point."
- 3. If relevant KPIs found, list up to 3 using EXACTLY this format — one block per KPI (use literal newlines):
+ 2. Read KPIs from result["results"]["vlm_kpis"]. If the list is empty, write: "No Value KPIs identified for this pain point."
+ 3. If vlm_kpis results are present, ALWAYS list them — do NOT filter by relevance. List up to 3, ordered by closest match to the pain point context. Use EXACTLY this format (use literal newlines):
 
     ▸ **[KPI Name]** · [kpi_category]
       🎯 Driver: [value_driver]  |  Lever: [value_lever]
@@ -514,7 +489,7 @@ def list_ingested_solutions() -> str:
         rows = cursor.fetchall()
     finally:
         cursor.close()
-        conn.close()
+        release_connection(conn)
 
     if not rows:
         return "No data ingested yet."
@@ -593,8 +568,9 @@ def retrieve_knowledge_context(
     """
     Retrieve relevant internal knowledge base entries for a single pain point.
 
-    Call this immediately after query_single_pain_point, before synthesizing the response.
-    Use the results to generate the knowledge-based fields in the card.
+    Call this once per row in batch mode (after retrieve_similar_cases_batch),
+    then perform a web search, then synthesize the row's output — before moving
+    to the next row.
 
     Args:
         pain_point:   Pain point text (same as passed to query_single_pain_point).
@@ -605,10 +581,13 @@ def retrieve_knowledge_context(
                       Future sources: "ai_scenarios", "premium_services"
 
     Returns:
-        JSON dict keyed by source_type. Each value is a list of matching entries.
-        next_gen entries: {title, content, solution, release, agent_based, joule_based}
-        vlm_kpis entries: {title, content, value_driver, value_lever, kpi_id, kpi_category, kpi_target, capability, kpi_formula, kpi_meas_freq}
-        Empty list means no relevant entries found — use the "no coverage" message.
+        JSON object with two keys:
+        - "IMPORTANT_CONTEXT": warnings about next_gen availability — read before synthesizing.
+        - "results": dict keyed by source_type, each value a list of matching entries.
+          Access as: response["results"]["next_gen"] and response["results"]["vlm_kpis"]
+          next_gen entries: {title, content, solution, release, agent_based, joule_based}
+          vlm_kpis entries: {title, value_driver, value_lever, kpi_id, kpi_category, kpi_target, capability, kpi_formula, kpi_meas_freq}
+          Empty list means no relevant entries found — use the "no coverage" message.
     """
     if source_types is None:
         source_types = ["next_gen"]
@@ -623,7 +602,14 @@ def retrieve_knowledge_context(
     total = sum(len(v) for v in results.values())
     log.info("   Returned %d entries across %d source(s)", total, len(source_types))
 
-    # Wrap results with mandatory context so Joule cannot omit it
+    # Strip 'content' from vlm_kpis entries only — they have structured fields sufficient
+    # for synthesis. next_gen entries keep 'content' (the feature description text).
+    results = {
+        st: (entries if st == "next_gen"
+             else [{k: v for k, v in e.items() if k != "content"} for e in entries])
+        for st, entries in results.items()
+    }
+
     payload = {
         "IMPORTANT_CONTEXT": {
             "next_gen_warning": (
