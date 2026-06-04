@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mcp.server.fastmcp import FastMCP
+from shared.instructions import SINGLE_QUERY_INSTRUCTIONS
 from server.recommend import (
     read_excel_painpoints as _read_excel,
     retrieve_similar_cases as _retrieve,
@@ -49,7 +50,7 @@ from shared.config import hana_connection, normalise_solution, release_connectio
 mcp = FastMCP(
     "ava",
     stateless_http=True,
-    instructions="""
+    instructions=f"""
 When a user says "Run SVA Analysis" or attaches a pain points Excel file:
 
 STRICT TOOL POLICY — only the following MCP tools may be used. No other tools, commands, or actions are permitted:
@@ -140,170 +141,7 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
 
 ---
 
-SINGLE PAIN POINT QUERY MODE
-
-When a user describes a pain point in text (without attaching an Excel file), activate single query mode.
-
-0. MULTI-POINT DETECTION (do this before anything else):
-   Read the user's input and determine whether it contains more than one distinct pain point.
-   Signals that indicate multiple pain points:
-     - Numbered or bulleted list (1. ... 2. ... / • ... • ...)
-     - Separate paragraphs each describing a different problem
-     - Explicit connectors: "también", "además", "otro problema", "also", "another issue", "secondly"
-     - Distinct subjects or SAP modules mentioned in the same message
-
-   IF multiple pain points are detected:
-     - Split the input into individual pain points. Each item must be self-contained — do NOT split
-       items that are part of the same problem description.
-     - Process each pain point independently, following steps 1 through 4 below for EACH one.
-     - Generate a separate complete card for each pain point.
-     - Present all cards sequentially in the response, separated by a blank line between cards.
-     - Do NOT aggregate or merge the cards into a dashboard — that is for batch Excel mode only.
-
-   IF only a single pain point is detected: proceed directly to step 1.
-
-1. Determine the solution:
-   - If the solution can be clearly inferred from the pain point text, use it directly — do NOT ask for confirmation.
-   - If the solution is ambiguous or cannot be determined, present the numbered list and ask the user to choose:
-    1. Ariba Buying
-    2. Ariba Catalog
-    3. Commerce Automation
-    4. Ariba Contracts
-    5. Business Network
-    6. Ariba Guided Buying
-    7. Ariba Invoice
-    8. Ariba Reporting
-    9. Ariba Supplier Risk
-    10. Ariba Sourcing
-    11. Spend Analysis
-    12. Ariba SIPM
-    13. Ariba SLP
-
-2. Once the user explicitly selects a solution (by number or name), call query_single_pain_point with:
-   - pain_point: the full text the user wrote
-   - solution: the solution name chosen
-
-2.5 Immediately after query_single_pain_point returns, call retrieve_knowledge_context with:
-   - pain_point: same text as step 2
-   - solution: copy the exact value of "validated_solution" from the query_single_pain_point JSON result — do NOT use the original user input or any other value
-   - source_types: ["next_gen", "vlm_kpis"]
-   The result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "vlm_kpis": [...]}}.
-   Access next_gen features as: result["results"]["next_gen"]
-   Access KPIs as: result["results"]["vlm_kpis"]
-
-3. Perform 1 web search BEFORE synthesizing the card.
-   Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
-   ONLY use results from: help.sap.com, community.sap.com, SAP release notes.
-   Do NOT use learning.sap.com, youtube.com, scribd.com, blogs, or any non-SAP source.
-   A qualifying URL must come from the actual search result (never constructed or guessed)
-   and have at least 4 path segments after the domain.
-   If the search returns no qualifying URL → omit Documentation entirely. Do NOT construct a URL.
-   DO NOT start step 4 until the web search is complete.
-
-4. Synthesize the full recommendation and present the result using ONLY this card format.
-   Generate ALL text in the same language as the pain_point.
-   Documentation: use only the URL(s) obtained in step 3. If none qualified → omit the section entirely.
-   Documentation STRICT QUALITY RULES — ALL rules must pass or the link is excluded:
-     1. The URL must point to a specific article — never a product root or category index.
-     2. The URL path must contain at least 4 segments after the domain.
-     3. These URL patterns are BLOCKED:
-        help.sap.com roots:
-          - https://help.sap.com/docs/ARIBA_SOURCING  (blocked unless followed by /guid/guid)
-          - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE
-          - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance
-        SAP Community portal landing pages:
-          - https://community.sap.com/topics/  (any URL starting with this)
-          - https://community.sap.com/t5/  followed by board slug then /ct-p/  (e.g. /t5/sap-ariba/ct-p/ariba)
-          - https://community.sap.com/t5/spend-management
-          - https://community.sap.com/t5/ariba  (unless the next segment is td-p or ta-p)
-        Always blocked:
-          - https://support.ariba.com
-     4. NEVER guess or construct a URL — only include URLs that came from a web search result.
-        If the search returned no specific article → omit the Documentation section entirely.
-
-   Card format — no extra text before or after:
-   DO NOT use Markdown tables anywhere in this card. Use only bold labels, bullets, and plain text.
-   CRITICAL: Never truncate or shorten any field — always write the complete text for every section.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔍 **PAIN POINT**
-[original pain point text — complete, never truncated]
-
-🏷 **Solution:** [canonical solution name]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 **RECOMMENDATION**
-[synthesized actionable recommendation — full text, never summarized or cut short]
-
-🎯 **EXPECTED BENEFITS**
-[expected business outcome — full text]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **SVA ANALYSIS**
-
-🗂 **Category:** [classified value] — [one-line description of the classified value only]
-
-⚡ **Effort:** [full label with description]
-📅 **Timeline:** [full label with description]
-📈 **Impact:** To be assessed by the consultant based on the client's specific context and priorities
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📚 **DOCUMENTATION**
-[Omit this entire section if no qualifying links found — do NOT show placeholder text]
-• [Article title](url)
-• [Article title](url)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 **NEXT-GEN COVERAGE**
-[CRITICAL RULES FOR THIS SECTION — violations are not acceptable:
- 1. NEVER present Next-gen features as available today or recommend them for immediate use.
- 2. ALWAYS start this section with the context block below (translated to the pain point language) BEFORE listing any feature.
- 3. Read features from result["results"]["next_gen"]. If the list is empty, write only: "No Next-gen feature identified for this pain point in the current roadmap."
-
- MANDATORY context block (always first, always present when features are listed):
- "⚠ The following features belong to Next-gen SAP Ariba — a fully re-engineered AI-native platform built on SAP BTP, released Q1 2026. These capabilities are NOT available in the current-generation platform. Accessing them requires a transition (Greenfield or Brownfield migration). No new contract is needed — Next-gen is delivered under existing subscriptions, but readiness and complexity must be assessed first."
-
- After the context block, list each relevant feature using EXACTLY this format — one bullet per feature:
- • [title] (Release: [release][, Agent-based][, Joule-based]) — [one full sentence on how it addresses the pain point — never truncate]
- Include "Agent-based" in the parenthesis ONLY if agent_based = "Yes". Include "Joule-based" ONLY if joule_based = "Yes". Omit both tags if both are "No".
- Never omit Release.]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📐 **VALUE KPIs**
-[Rules for this section:
- 1. Only populate when validated_solution is one of: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk — for other solutions write: "No KPI data available for this solution."
- 2. Read KPIs from result["results"]["vlm_kpis"]. If the list is empty, write: "No Value KPIs identified for this pain point."
- 3. If vlm_kpis results are present, ALWAYS list them — do NOT filter by relevance. List up to 3, ordered by closest match to the pain point context. Use EXACTLY this format (use literal newlines):
-
-    ▸ **[KPI Name]** · [kpi_category]
-      🎯 Driver: [value_driver]  |  Lever: [value_lever]
-      ⚙ Capability: [capability]
-      📐 Formula: [kpi_formula]
-      🕐 Frequency: [kpi_meas_freq]  |  ID: [kpi_id]
-
-    Separate each KPI block with a blank line. Omit the ID line if kpi_id is null.
-    Never truncate formula or capability — write the full text.
- 4. After the KPI list, add one line: "📎 Source: SAP APM KPI Catalog — me.sap.com/app/kpicatalog"]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-   Rules for the card:
-   - DO NOT use Markdown tables — no pipes, no |---|---| separators anywhere in the output
-   - Use the ━━━ dividers exactly as shown to visually separate each section
-   - Category must be one of: Feature Adoption, Innovation, Q&A, Process Change, Training, Roadmap Discussion
-   - Category description (one line only, matching the classified value):
-       Feature Adoption → "not using an existing feature that would solve the pain point"
-       Innovation → "new or non-standard approach beyond current configuration"
-       Training → "lack of knowledge or incorrect usage — recommendation is educational"
-       Process Change → "redesign of a business process, not just a system change"
-       Q&A → "informational question with a documented answer"
-       Roadmap Discussion → "future SAP feature may address this — requires monitoring"
-   - Effort must use the full label: Low (1 – 3 Days) | Medium (1 – 3 Weeks) | High (1 – 2 Months) | Complex (3+ Months) | N/A
-   - Timeline must use the full label: Quick Win (Within 1 week) | Short Term (1 – 3 Weeks) | Mid Term (1 – 3 Months) | Long Term (3+ Months)
-   - Impact: ALWAYS use "To be assessed" — never classify Low/Medium/High
-   - Documentation: list only specific, actionable links — no generic landing pages
-   - Do NOT show a KPI dashboard for single queries
-   - NEVER truncate, shorten, or summarize any field — always output complete text for all sections
+{SINGLE_QUERY_INSTRUCTIONS}
 """,
 )
 log.info("=== AVA MCP server starting ===")
