@@ -16,8 +16,11 @@ import os
 import pathlib
 import shutil
 import warnings
+import logging
 from langdetect import detect as _detect_lang, LangDetectException
 import openpyxl
+
+log = logging.getLogger(__name__)
 from openpyxl.styles import Font, Alignment
 import pandas as pd
 
@@ -196,21 +199,21 @@ def retrieve_similar_cases(
 
     conn   = hana_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        VECTOR_SEARCH_SQL.format(top_k=top_k, area_filter=area_filter),
-        positional,
-    )
-    cols = ["id", "pain_point", "solution_area", "recommendation", "category",
-            "effort", "benefits", "timeline", "impact"]
-    raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
+    try:
+        cursor.execute(
+            VECTOR_SEARCH_SQL.format(top_k=top_k, area_filter=area_filter),
+            positional,
+        )
+        cols = ["id", "pain_point", "solution_area", "recommendation", "category",
+                "effort", "benefits", "timeline", "impact"]
+        raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-    # Increment USE_COUNT for every retrieved case
-    for r in raw:
-        cursor.execute(UPDATE_USE_COUNT_SQL, (r["id"],))
-    conn.commit()
-
-    cursor.close()
-    conn.close()
+        for r in raw:
+            cursor.execute(UPDATE_USE_COUNT_SQL, (r["id"],))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
 
     rows = [
         {
@@ -239,50 +242,13 @@ def retrieve_similar_cases_batch(
     import concurrent.futures
 
     def _search_one(item):
-        idx        = item["idx"]
-        pain_point = item["pain_point"]
-        solution   = item["solution"]
-        area       = item.get("area")
-
-        query_vector = embed_text(pain_point)
-        vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
-        area_filter  = "AND SOLUTION_AREA = ?" if area else ""
-
-        positional = [solution]
-        if area:
-            positional.append(area)
-        positional.append(vector_str)
-
-        conn   = hana_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            VECTOR_SEARCH_SQL.format(top_k=top_k, area_filter=area_filter),
-            positional,
+        cases = retrieve_similar_cases(
+            pain_point=item["pain_point"],
+            solution=item["solution"],
+            area=item.get("area"),
+            top_k=top_k,
         )
-        cols = ["id", "pain_point", "solution_area", "recommendation", "category",
-                "effort", "benefits", "timeline", "impact"]
-        raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-        # Increment USE_COUNT for every retrieved case
-        for r in raw:
-            cursor.execute(UPDATE_USE_COUNT_SQL, (r["id"],))
-        conn.commit()
-
-        cursor.close()
-        conn.close()
-
-        cases = [
-            {
-                "similar_pain_point": r["pain_point"],
-                "solution_area":      r["solution_area"],
-                "category":           r["category"],
-                "effort":             r["effort"],
-                "timeline":           r["timeline"],
-                "impact":             r["impact"],
-            }
-            for r in raw
-        ]
-        return {"idx": idx, "cases": cases}
+        return {"idx": item["idx"], "cases": cases}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(items), 10)) as pool:
         results = list(pool.map(_search_one, items))
@@ -349,8 +315,8 @@ def write_excel_output(
                         r["solution"] = sr.get("solution", "")
                     if not r.get("solution area") and sr.get("solution_area"):
                         r["solution area"] = sr.get("solution_area")
-        except Exception:
-            pass  # non-fatal — columns will just be empty
+        except Exception as e:
+            log.warning("backfill pain_point/solution failed: %s", e, exc_info=True)
 
     # --- Expand short Effort / Timeline labels to full descriptive strings ---
     _EFFORT_MAP = {
@@ -372,23 +338,46 @@ def write_excel_output(
                 r[field] = mapping.get(val.strip().lower(), val)
 
     # --- Strip blocked / generic documentation URLs ---
+    # These are root/category pages that return 404 or are not specific articles.
+    # Any URL that starts with one of these prefixes is blocked unconditionally.
     _URL_BLOCKLIST = (
         "https://community.sap.com/topics/ariba",
         "https://community.sap.com/t5/spend-management",
+        "https://community.sap.com/t5/ariba",
+        "https://support.ariba.com",
+        "https://support.sap.com",
+        "https://learning.sap.com/learning-journeys",  # model hallucinates these — always 404
+        # help.sap.com/docs/<PRODUCT> roots — blocked regardless of sub-path (model hallucinates sub-paths)
         "https://help.sap.com/docs/ARIBA_SOURCING",
         "https://help.sap.com/docs/ariba_sourcing",
+        "https://help.sap.com/docs/ariba-sourcing",
+        "https://help.sap.com/docs/ARIBA_CONTRACTS",
+        "https://help.sap.com/docs/ariba_contracts",
+        "https://help.sap.com/docs/ariba-contracts",
+        "https://help.sap.com/docs/ARIBA_BUYING",
+        "https://help.sap.com/docs/ariba_buying",
+        "https://help.sap.com/docs/ariba-buying",
+        "https://help.sap.com/docs/ARIBA_INVOICE",
+        "https://help.sap.com/docs/ariba_invoice",
+        "https://help.sap.com/docs/ariba-invoice",
+        "https://help.sap.com/docs/ARIBA_GUIDED_BUYING",
+        "https://help.sap.com/docs/ariba_guided_buying",
+        "https://help.sap.com/docs/ariba-guided-buying",
         "https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
+        "https://help.sap.com/docs/ariba_supplier_lifecycle_and_performance",
         "https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance",
-        "https://support.ariba.com",
+        "https://help.sap.com/docs/SAP_ARIBA",
+        "https://help.sap.com/docs/sap_ariba",
+        "https://help.sap.com/docs/sap-ariba",
+        "https://help.sap.com/docs/SAP_ANALYTICS_CLOUD",
+        "https://help.sap.com/docs/sap_analytics_cloud",
+        "https://help.sap.com/docs/sap-analytics-cloud",
     )
     def _is_blocked(url: str) -> bool:
-        u = url.strip().rstrip("/")
+        u = url.strip().rstrip("/").lower()
         for blocked in _URL_BLOCKLIST:
-            if u.lower().startswith(blocked.lower()):
-                # Allow only if there is more path after the blocked prefix
-                remainder = u[len(blocked):]
-                if not remainder or remainder in ("/",):
-                    return True
+            if u.startswith(blocked.lower()):
+                return True
         return False
 
     for r in rows:
@@ -438,20 +427,23 @@ def write_excel_output(
     from openpyxl.styles import Border, Side
     outer = Side(style="medium", color="002A86")
     inner = Side(style="thin",   color="EAECEE")
-    n_cols = len(output_cols)
-    total_rows = 1 + len([r for r in rows if r.get("idx") is not None])
-
-    def _border(row_i, col_i):
-        return Border(
-            left   = outer if col_i == 1       else inner,
-            right  = outer if col_i == n_cols  else inner,
-            top    = outer if row_i == 1       else inner,
-            bottom = outer if row_i == total_rows else inner,
-        )
-
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "SVA Analysis"
+
+    # Data rows (computed before _border so total_rows is accurate)
+    valid_rows = [r for r in rows if r.get("idx") is not None]
+    total_rows = 1 + len(valid_rows)
+
+    n_cols = len(output_cols)
+
+    def _border(row_i, col_i):
+        return Border(
+            left   = outer if col_i == 1          else inner,
+            right  = outer if col_i == n_cols     else inner,
+            top    = outer if row_i == 1          else inner,
+            bottom = outer if row_i == total_rows else inner,
+        )
 
     # Header row
     col_widths = {"Pain Point": 45, "Solution": 20, "Solution Area": 25,
@@ -469,8 +461,6 @@ def write_excel_output(
 
     ws.row_dimensions[1].height = 30
 
-    # Data rows
-    valid_rows = [r for r in rows if r.get("idx") is not None]
     rows_written = 0
     for ri, row in enumerate(valid_rows, start=2):
         is_even  = (ri % 2 == 0)
@@ -556,16 +546,18 @@ def retrieve_knowledge_context(
         try:
             conn   = hana_connection()
             cursor = conn.cursor()
-            cursor.execute(
-                KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=solution_filter),
-                positional,
-            )
-            cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
-                    "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
-                    "capability", "kpi_formula", "kpi_meas_freq"]
-            rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
-            cursor.close()
-            conn.close()
+            try:
+                cursor.execute(
+                    KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=solution_filter),
+                    positional,
+                )
+                cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
+                        "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
+                        "capability", "kpi_formula", "kpi_meas_freq"]
+                rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            finally:
+                cursor.close()
+                conn.close()
             return source_type, rows
         except Exception as e:
             log.error("   _search_one[%s] failed: %s", source_type, e, exc_info=True)

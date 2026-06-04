@@ -95,6 +95,13 @@ def ingest_file(filepath: str):
     conn   = hana_connection()
     cursor = conn.cursor()
 
+    # Remove any existing rows for this source file to prevent duplicates on re-ingestion
+    cursor.execute("DELETE FROM SVA2.PAIN_POINTS WHERE SOURCE_FILE = ?", (os.path.basename(filepath),))
+    deleted = cursor.rowcount
+    conn.commit()
+    if deleted:
+        print(f"  Removed {deleted} existing rows for {os.path.basename(filepath)}")
+
     inserted = skipped = 0
 
     for _, raw_row in df.iterrows():

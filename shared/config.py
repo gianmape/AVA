@@ -8,6 +8,8 @@ No manual OAuth or config.json needed.
 """
 import os
 import difflib
+import unicodedata
+import re
 import requests as _requests
 from dotenv import load_dotenv
 from hdbcli import dbapi
@@ -15,6 +17,13 @@ from hdbcli import dbapi
 from gen_ai_hub.proxy.core.proxy_clients import get_proxy_client
 
 load_dotenv()
+
+
+def _normalise_str(s: str) -> str:
+    """Lowercase + remove accents for case/accent-insensitive comparisons."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+
 
 # ---------------------------------------------------------------------------
 # Valid taxonomy values — used in both ingestion (metadata) and query (prompt)
@@ -66,6 +75,7 @@ COLUMN_ALIASES = {
     "observation":            "pain_point",
     "observation/pain point": "pain_point",
     "pain point":             "pain_point",
+    "paint point":            "pain_point",  # common typo
     "painpoint":              "pain_point",
     "solution":               "solution",
     "area":                   "solution_area",
@@ -147,13 +157,14 @@ def embed_text(text: str) -> list[float]:
 # HANA Cloud connection
 # ---------------------------------------------------------------------------
 def hana_connection():
+    ssl_validate = os.environ.get("HANA_SSL_VALIDATE", "true").strip().lower() != "false"
     return dbapi.connect(
         address=os.environ["HANA_HOST"],
         port=int(os.environ.get("HANA_PORT", 443)),
         user=os.environ["HANA_USER"],
         password=os.environ["HANA_PASSWORD"],
         encrypt=True,
-        sslValidateCertificate=False,
+        sslValidateCertificate=ssl_validate,
     )
 
 
@@ -171,17 +182,10 @@ def normalise_solution(value: str | None) -> str | None:
     if not value:
         return None
 
-    import unicodedata
-    import re
-
-    def _normalise(s: str) -> str:
-        nfkd = unicodedata.normalize("NFKD", s)
-        return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
-
-    canonical_map = {_normalise(v): v for v in VALID_SOLUTIONS}
+    canonical_map = {_normalise_str(v): v for v in VALID_SOLUTIONS}
 
     # 1. Exact match
-    raw_norm = _normalise(value)
+    raw_norm = _normalise_str(value)
     if raw_norm in canonical_map:
         return canonical_map[raw_norm]
 
@@ -240,15 +244,8 @@ def normalise_solution_area(value: str | None) -> str | None:
     if not value:
         return value
 
-    import unicodedata
-
-    def _normalise(s: str) -> str:
-        """Lowercase + remove accents for fuzzy comparison."""
-        nfkd = unicodedata.normalize("NFKD", s)
-        return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
-
-    raw_norm = _normalise(value)
-    canonical_map = {_normalise(v): v for v in VALID_SOLUTION_AREAS}
+    raw_norm = _normalise_str(value)
+    canonical_map = {_normalise_str(v): v for v in VALID_SOLUTION_AREAS}
 
     # 1. Exact accent-insensitive match
     if raw_norm in canonical_map:

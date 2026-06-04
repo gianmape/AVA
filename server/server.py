@@ -83,22 +83,21 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
    - source_types: ["next_gen", "vlm_kpis"] — always include both
    Store the results indexed by idx for use in step 3.
 
-LANGUAGE RULE: Each row from read_excel_painpoints includes a `language` field (e.g. "es", "en", "pt").
-You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba Next-Gen) in that language.
-"es" = Spanish, "en" = English, "pt" = Portuguese. This is mandatory — never override with English.
-
 3. For EACH row, synthesize your own original output using your SAP knowledge and the tool results above.
 
-   WEB SEARCH POLICY — read carefully before searching:
-   - You have a budget of MAX 3 web searches for the ENTIRE batch run (not per row).
-   - You MAY use 1 web search for a row ONLY when ALL of the following are true:
-       a) retrieve_similar_cases returned zero cases OR all cases have low relevance (no clear match)
-       b) Your training knowledge is insufficient to produce a confident recommendation
-       c) You have not yet exhausted the 3-search budget for this batch
-   - If similar cases exist for a row → do NOT search, use training knowledge instead.
-   - If the budget is exhausted → do NOT search for any remaining rows.
-   - ONLY use these sources: help.sap.com, community.sap.com, learning.sap.com, SAP release notes.
-   - Do NOT use any other external websites, blogs, or non-SAP sources.
+   LANGUAGE RULE (mandatory): each row includes a `language` field ("es", "en", "pt").
+   Write ALL generated text for that row — Recommendations, Benefits, Ariba Next-Gen, Value KPIs — in that language.
+   "es" = Spanish · "en" = English · "pt" = Portuguese. Never override with English regardless of your default.
+
+   WEB SEARCH POLICY:
+   - Budget: MAX 3 web searches for the ENTIRE batch run.
+   - Purpose: search ONLY to find specific documentation URLs — not to build recommendations.
+   - Similar cases from retrieve_similar_cases do NOT replace documentation search.
+     Use similar cases only to calibrate category/effort/timeline/impact.
+   - Search for documentation when: you do not have a verified specific URL for this pain point topic AND budget not exhausted.
+   - ONLY use these sources: help.sap.com, community.sap.com, SAP release notes.
+   - Do NOT search learning.sap.com — those URLs are unreliable.
+   - If budget exhausted or search finds no specific article → omit Documentation entirely for that row.
    - Recommendations: actionable steps grounded in your SAP documentation research.
      Do NOT copy from historical cases — use them only to understand what area to explore.
    - Category: one of — Feature Adoption, Innovation, Q&A, Process Change, Training, Roadmap Discussion
@@ -114,10 +113,14 @@ You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba
        3. These URLs and any URL that starts with them are BLOCKED — never include them:
           - https://community.sap.com/topics/ariba
           - https://community.sap.com/t5/spend-management
+          - https://community.sap.com/t5/ariba
           - https://help.sap.com/docs/ARIBA_SOURCING  (without further path)
+          - https://help.sap.com/docs/ARIBA_CONTRACTS  (without further path)
+          - https://help.sap.com/docs/ariba-contracts  (without further path)
           - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  (without further path)
           - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance  (without further path)
           - https://support.ariba.com
+          - https://learning.sap.com/learning-journeys  (these are always 404)
        4. If no documentation meeting all rules exists for a pain point, omit the Documentation field entirely.
           Do NOT substitute generic links as fallback.
        Return as JSON array of {"title": "...", "url": "..."}. Title must describe the specific content.
@@ -154,6 +157,8 @@ You MUST write ALL generated text for that row (Recommendations, Benefits, Ariba
        solution (str): copy from read_excel_painpoints output for this row
        Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen, Value KPIs
      pain_point and solution must NEVER be empty or omitted — copy them exactly from step 1.
+     LANGUAGE: Recommendations, Benefits, Ariba Next-Gen, Value KPIs MUST be in the same language as the pain point.
+               Pass the exact same text you already generated in step 3 — do NOT translate or rewrite to English.
    Call write_excel_output once per batch — do NOT wait until all batches are done.
 
 5. After ALL batches are processed and all write_excel_output calls complete, present ONLY this — nothing else:
@@ -219,8 +224,10 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    - source_types: ["next_gen", "vlm_kpis"]
 
 3. After both tools return, synthesize the full recommendation for this single pain point.
-   Research SAP documentation — LIMIT: up to 5 sources.
-   ONLY use these sources: help.sap.com, community.sap.com, learning.sap.com, SAP release notes.
+   Search SAP documentation to find specific article URLs — LIMIT: up to 5 sources.
+   Similar cases from query_single_pain_point do NOT replace documentation search — use them only to calibrate category/effort/timeline/impact.
+   ONLY use these sources: help.sap.com, community.sap.com, SAP release notes.
+   Do NOT search learning.sap.com — those URLs are unreliable.
    Do NOT use any other external websites, blogs, or non-SAP sources.
    Generate ALL text in the same language as the pain_point.
    Documentation STRICT QUALITY RULES — ALL four rules must pass or the link is excluded:
@@ -442,19 +449,24 @@ def write_excel_output(
     used in read_excel_painpoints, and only the rows that were returned by
     that tool (with their original idx values).
 
+    LANGUAGE RULE: Recommendations, Benefits, Ariba Next-Gen, and Value KPIs MUST be
+    written in the same language as the pain point (from the `language` field returned
+    by read_excel_painpoints). "es" = Spanish, "en" = English, "pt" = Portuguese.
+    Pass the exact text generated during synthesis — do NOT translate to English.
+
     Args:
         input_path:  Path to the attached .xlsx file.
         rows:        List of row results. Each element must have:
                        - idx (int): row index from read_excel_painpoints
-                       - Recommendations (str)
+                       - Recommendations (str): in pain point language
                        - Category (str): Feature Adoption | Innovation | Q&A | Process Change | Training | Roadmap Discussion
                        - Effort (str): Low | Medium | High | Complex | N/A
-                       - Benefits (str)
+                       - Benefits (str): in pain point language
                        - Documentation (list of {title, url} dicts)
                        - Timeline (str): Quick Win | Short Term | Mid Term | Long Term
                        - Impact (str): Low | Medium | High
-                       - Ariba Next-Gen (str): Next-gen coverage text or "No Next-gen coverage identified."
-                       - Value KPIs (str): KPI block text or "No Value KPIs identified." (Ariba Sourcing only)
+                       - Ariba Next-Gen (str): in pain point language
+                       - Value KPIs (str): in pain point language
                      All fields except idx are optional.
         output_path: Optional output path. Defaults to <input>_RECOMMENDED.xlsx in output/.
 
@@ -493,14 +505,16 @@ def list_ingested_solutions() -> str:
     log.info(">> list_ingested_solutions called")
     conn = hana_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT SOLUTION, COUNT(*) AS CNT "
-        "FROM SVA2.PAIN_POINTS "
-        "GROUP BY SOLUTION ORDER BY CNT DESC"
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            "SELECT SOLUTION, COUNT(*) AS CNT "
+            "FROM SVA2.PAIN_POINTS "
+            "GROUP BY SOLUTION ORDER BY CNT DESC"
+        )
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
     if not rows:
         return "No data ingested yet."
@@ -574,7 +588,7 @@ _VLM_SOLUTIONS = {
 def retrieve_knowledge_context(
     pain_point: str,
     solution: str,
-    source_types: list[str] = ["next_gen"],
+    source_types: list[str] | None = None,
 ) -> str:
     """
     Retrieve relevant internal knowledge base entries for a single pain point.
@@ -596,6 +610,9 @@ def retrieve_knowledge_context(
         vlm_kpis entries: {title, content, value_driver, value_lever, kpi_id, kpi_category, kpi_target, capability, kpi_formula, kpi_meas_freq}
         Empty list means no relevant entries found — use the "no coverage" message.
     """
+    if source_types is None:
+        source_types = ["next_gen"]
+
     # Always include vlm_kpis for solutions that have KPI data — do not rely on Joule passing it.
     if solution in _VLM_SOLUTIONS and "vlm_kpis" not in source_types:
         source_types = list(source_types) + ["vlm_kpis"]
