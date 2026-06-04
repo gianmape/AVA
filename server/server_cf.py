@@ -93,13 +93,17 @@ SINGLE QUERY MODE:
 
 2. Call query_single_pain_point(pain_point, solution).
    Then immediately call retrieve_knowledge_context(pain_point, validated_solution, ["next_gen","vlm_kpis"]).
+   The retrieve_knowledge_context result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "vlm_kpis": [...]}}.
+   Access next_gen features as: result["results"]["next_gen"]
+   Access KPIs as: result["results"]["vlm_kpis"]
 
-3. MANDATORY: Perform 1 web search to find a specific SAP documentation URL before synthesizing the card.
-   Search for a specific help.sap.com article or community.sap.com post relevant to the pain point.
+3. MANDATORY: Perform 1 web search BEFORE synthesizing the card.
+   Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
    Only use: help.sap.com, community.sap.com, SAP release notes (max 5 links).
    Similar cases do NOT replace documentation search — use them only to calibrate category/effort/timeline/impact.
    Do NOT use learning.sap.com — the ENTIRE domain is blocked, every URL on it is unreliable.
    NEVER construct or guess a URL — only include URLs returned by the search. If no specific article found, omit Documentation entirely.
+   DO NOT start step 4 until the web search is complete.
 
 4. Present using ONLY this card — no extra text, no Markdown tables:
 

@@ -191,16 +191,20 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    Access next_gen features as: result["results"]["next_gen"]
    Access KPIs as: result["results"]["vlm_kpis"]
 
-3. After both tools return, synthesize the full recommendation for this single pain point.
-   MANDATORY: Perform 1 web search to find specific SAP documentation URLs before generating the card.
-   Search for a specific help.sap.com article or community.sap.com post relevant to this pain point.
-   ONLY use these sources: help.sap.com, community.sap.com, SAP release notes. Max 5 links.
-   Do NOT search learning.sap.com — those URLs are unreliable.
-   Do NOT use any other external websites, blogs, or non-SAP sources.
-   If the search returns no qualifying URL, omit Documentation entirely — do NOT construct or guess a URL.
+3. Perform 1 web search BEFORE synthesizing the card.
+   Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
+   ONLY use results from: help.sap.com, community.sap.com, SAP release notes.
+   Do NOT use learning.sap.com, youtube.com, scribd.com, blogs, or any non-SAP source.
+   A qualifying URL must come from the actual search result (never constructed or guessed)
+   and have at least 4 path segments after the domain.
+   If the search returns no qualifying URL → omit Documentation entirely. Do NOT construct a URL.
+   DO NOT start step 4 until the web search is complete.
+
+4. Synthesize the full recommendation and present the result using ONLY this card format.
    Generate ALL text in the same language as the pain_point.
-   Documentation STRICT QUALITY RULES — ALL four rules must pass or the link is excluded:
-     1. The URL must point to a specific article, guide, or topic page — never a product root or category index.
+   Documentation: use only the URL(s) obtained in step 3. If none qualified → omit the section entirely.
+   Documentation STRICT QUALITY RULES — ALL rules must pass or the link is excluded:
+     1. The URL must point to a specific article — never a product root or category index.
      2. The URL path must contain at least 4 segments after the domain.
      3. These URL patterns are BLOCKED:
         help.sap.com roots:
@@ -217,7 +221,7 @@ When a user describes a pain point in text (without attaching an Excel file), ac
      4. NEVER guess or construct a URL — only include URLs that came from a web search result.
         If the search returned no specific article → omit the Documentation section entirely.
 
-4. Present the result using ONLY this card format — no extra text before or after.
+   Card format — no extra text before or after:
    DO NOT use Markdown tables anywhere in this card. Use only bold labels, bullets, and plain text.
    CRITICAL: Never truncate or shorten any field — always write the complete text for every section.
 
