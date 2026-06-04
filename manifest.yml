@@ -1,7 +1,7 @@
 ---
 applications:
   - name: ava
-    command: python mcp_server_cf.py
+    command: python server/server_cf.py --http --port $PORT
     buildpacks:
       - python_buildpack
     memory: 512M
