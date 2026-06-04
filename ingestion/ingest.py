@@ -22,6 +22,7 @@ from shared.config import (
     clean_str,
     embed_text,
     hana_connection,
+    release_connection,
     VALID_SOLUTIONS,
     normalise_solution_area,
     normalise_effort,
@@ -143,7 +144,7 @@ def ingest_file(filepath: str):
 
     conn.commit()
     cursor.close()
-    conn.close()
+    release_connection(conn)
 
     print(f"  Done — inserted: {inserted}, skipped: {skipped}")
 
