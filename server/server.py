@@ -53,14 +53,17 @@ mcp = FastMCP(
     instructions=f"""
 When a user says "Run SVA Analysis" or attaches a pain points Excel file:
 
-STRICT TOOL POLICY — only the following MCP tools may be used. No other tools, commands, or actions are permitted:
+STRICT TOOL POLICY — only the following tools may be used. No other tools, commands, or actions are permitted:
+  MCP tools:
   - read_excel_painpoints
   - retrieve_similar_cases_batch
   - retrieve_knowledge_context
   - write_excel_output
   - list_ingested_solutions
   - query_single_pain_point
-Do NOT execute terminal commands, read local files directly, run Python scripts, or use any non-MCP tool.
+  Built-in tools (Joule Desktop):
+  - web_search (REQUIRED for documentation — see step 2.5b)
+Do NOT execute terminal commands, read local files directly, run Python scripts, or use any tool not listed above.
 Do NOT read JSON files from Joule Desktop temp directories or any other location.
 
 1. Call read_excel_painpoints with the path of the attached file and NO offset/limit first.

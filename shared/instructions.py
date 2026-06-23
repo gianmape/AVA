@@ -67,26 +67,46 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    Access next_gen features as: result["results"]["next_gen"]
    Access KPIs as: result["results"]["vlm_kpis"]
 
-3. Perform 1 web search BEFORE synthesizing the card.
-   Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
+2.7 WEB SEARCH (mandatory — do this BEFORE writing the card):
+   Perform 1 web search to find specific SAP documentation for this pain point.
+   Search query: "SAP Ariba [solution] [topic keywords] site:help.sap.com OR site:community.sap.com"
    ONLY use results from: help.sap.com, community.sap.com, SAP release notes.
-   Do NOT use learning.sap.com, youtube.com, scribd.com, blogs, or any non-SAP source.
+   Do NOT use learning.sap.com — the ENTIRE domain is blocked.
    A qualifying URL must come from the actual search result (never constructed or guessed)
    and have at least 4 path segments after the domain.
-   If the search returns no qualifying URL \u2192 omit Documentation entirely. Do NOT construct a URL.
-   DO NOT start step 4 until the web search is complete.
+   If no qualifying URL is found → documentation will be empty (handled in step 3.1).
 
-4. Synthesize the full recommendation and present the result using ONLY this card format.
+3. Synthesize the full recommendation and present the result using ONLY this card format.
    Generate ALL text in the same language as the pain_point.
-   Documentation: use only the URL(s) obtained in step 3. If none qualified \u2192 omit the section entirely.
+   Use the context from steps 2, 2.5, and 2.7 to build the card.
+
+   3.1 Populate the DOCUMENTATION section:
+       a) From the web search results in step 2.7, select URLs that pass ALL quality rules below.
+       b) If the search returned no qualifying URLs → omit the DOCUMENTATION section entirely.
+          Do NOT use training knowledge to construct or guess URLs — they are unreliable.
+       Do NOT embed links inline within the recommendation text — not as hyperlinks, not as "Más información",
+       not as "Ver más", not as footnote-style references. ONLY in DOCUMENTATION bullets.
+
    Documentation STRICT QUALITY RULES \u2014 ALL rules must pass or the link is excluded:
      1. The URL must point to a specific article \u2014 never a product root or category index.
      2. The URL path must contain at least 4 segments after the domain.
-     3. These URL patterns are BLOCKED:
-        help.sap.com roots:
-          - https://help.sap.com/docs/ARIBA_SOURCING  (blocked unless followed by /guid/guid)
-          - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE
-          - https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance
+     3. These URL patterns are BLOCKED (product roots — too generic):
+        help.sap.com /docs/ roots — blocked for ALL Ariba products:
+          - https://help.sap.com/docs/ARIBA_CONTRACTS  and ariba-contracts  and ariba_contracts
+          - https://help.sap.com/docs/ARIBA_SOURCING  and ariba-sourcing  and ariba_sourcing
+          - https://help.sap.com/docs/ARIBA_BUYING  and ariba-buying  and ariba_buying
+          - https://help.sap.com/docs/ARIBA_INVOICE  and ariba-invoice  and ariba_invoice
+          - https://help.sap.com/docs/ARIBA_GUIDED_BUYING  and ariba-guided-buying
+          - https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  and ariba-supplier-lifecycle-and-performance
+          - https://help.sap.com/docs/SAP_ARIBA  and sap-ariba  and sap_ariba
+        help.sap.com /viewer/product/ roots — same products, legacy URL format:
+          - https://help.sap.com/viewer/product/ARIBA_CONTRACTS  (and lowercase variants)
+          - https://help.sap.com/viewer/product/ARIBA_SOURCING  (and lowercase variants)
+          - https://help.sap.com/viewer/product/ARIBA_BUYING  (and lowercase variants)
+          - https://help.sap.com/viewer/product/ARIBA_INVOICE  (and lowercase variants)
+          - https://help.sap.com/viewer/product/ARIBA_GUIDED_BUYING  (and lowercase variants)
+          - https://help.sap.com/viewer/product/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE  (and lowercase variants)
+          - https://help.sap.com/viewer/product/SAP_ARIBA  (and lowercase variants)
         SAP Community portal landing pages:
           - https://community.sap.com/topics/  (any URL starting with this)
           - https://community.sap.com/t5/  followed by board slug then /ct-p/  (e.g. /t5/sap-ariba/ct-p/ariba)
@@ -94,6 +114,7 @@ When a user describes a pain point in text (without attaching an Excel file), ac
           - https://community.sap.com/t5/ariba  (unless the next segment is td-p or ta-p)
         Always blocked:
           - https://support.ariba.com
+          - https://learning.sap.com  (entire domain — URLs are unreliable)
      4. NEVER guess or construct a URL \u2014 only include URLs that came from a web search result.
         If the search returned no specific article \u2192 omit the Documentation section entirely.
 
@@ -126,6 +147,7 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 \U0001f4da **DOCUMENTATION**
 [Omit this entire section if no qualifying links found \u2014 do NOT show placeholder text]
+CRITICAL: Do NOT embed documentation links or references inline within the recommendation text. ALL links must appear here as bullets only.
 \u2022 [Article title](url)
 \u2022 [Article title](url)
 

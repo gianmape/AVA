@@ -14,11 +14,18 @@ These functions are exposed as MCP tools via mcp/server.py.
 import sys
 import os
 import pathlib
+import re
 import shutil
 import warnings
 import logging
-from langdetect import detect as _detect_lang, LangDetectException
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
+import requests
+from langdetect import detect as _detect_lang, LangDetectException, DetectorFactory
 import openpyxl
+
+# Make langdetect deterministic — avoids sporadic misclassification of short Spanish text
+DetectorFactory.seed = 0
 
 log = logging.getLogger(__name__)
 from openpyxl.styles import Font, Alignment
@@ -80,51 +87,11 @@ TARGET_COLS = {
 # Built once at import time — _is_blocked() does no repeated .lower() calls.
 _URL_BLOCKLIST = tuple(p.lower().rstrip("/") for p in (
     "https://community.sap.com/topics/",
-    "https://community.sap.com/t5/spend-management",
-    "https://community.sap.com/t5/ariba",
     "https://support.ariba.com",
     "https://support.sap.com",
     "https://learning.sap.com",         # entire domain blocked — all URLs are unreliable
-    # help.sap.com /docs/ product roots
-    "https://help.sap.com/docs/ARIBA_SOURCING",
-    "https://help.sap.com/docs/ariba_sourcing",
-    "https://help.sap.com/docs/ariba-sourcing",
-    "https://help.sap.com/docs/ARIBA_CONTRACTS",
-    "https://help.sap.com/docs/ariba_contracts",
-    "https://help.sap.com/docs/ariba-contracts",
-    "https://help.sap.com/docs/ARIBA_BUYING",
-    "https://help.sap.com/docs/ariba_buying",
-    "https://help.sap.com/docs/ariba-buying",
-    "https://help.sap.com/docs/ARIBA_INVOICE",
-    "https://help.sap.com/docs/ariba_invoice",
-    "https://help.sap.com/docs/ariba-invoice",
-    "https://help.sap.com/docs/ARIBA_GUIDED_BUYING",
-    "https://help.sap.com/docs/ariba_guided_buying",
-    "https://help.sap.com/docs/ariba-guided-buying",
-    "https://help.sap.com/docs/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
-    "https://help.sap.com/docs/ariba_supplier_lifecycle_and_performance",
-    "https://help.sap.com/docs/ariba-supplier-lifecycle-and-performance",
-    "https://help.sap.com/docs/SAP_ARIBA",
-    "https://help.sap.com/docs/sap_ariba",
-    "https://help.sap.com/docs/sap-ariba",
-    "https://help.sap.com/docs/SAP_ANALYTICS_CLOUD",
-    "https://help.sap.com/docs/sap_analytics_cloud",
-    "https://help.sap.com/docs/sap-analytics-cloud",
-    # help.sap.com /viewer/product/ roots — same products, legacy URL format
-    "https://help.sap.com/viewer/product/ARIBA_SOURCING",
-    "https://help.sap.com/viewer/product/ariba_sourcing",
-    "https://help.sap.com/viewer/product/ARIBA_CONTRACTS",
-    "https://help.sap.com/viewer/product/ariba_contracts",
-    "https://help.sap.com/viewer/product/ARIBA_BUYING",
-    "https://help.sap.com/viewer/product/ariba_buying",
-    "https://help.sap.com/viewer/product/ARIBA_INVOICE",
-    "https://help.sap.com/viewer/product/ariba_invoice",
-    "https://help.sap.com/viewer/product/ARIBA_GUIDED_BUYING",
-    "https://help.sap.com/viewer/product/ariba_guided_buying",
-    "https://help.sap.com/viewer/product/ARIBA_SUPPLIER_LIFECYCLE_AND_PERFORMANCE",
-    "https://help.sap.com/viewer/product/ariba_supplier_lifecycle_and_performance",
-    "https://help.sap.com/viewer/product/SAP_ARIBA",
-    "https://help.sap.com/viewer/product/sap_ariba",
+    # help.sap.com /viewer/product/ roots — legacy URL format (no GUID = no article)
+    "https://help.sap.com/viewer/product/",
 ))
 
 
@@ -135,19 +102,167 @@ def _is_blocked(url: str) -> bool:
     # Block SAP Community portal category pages: /t5/<board>/ct-p/<anything>
     if "community.sap.com/t5/" in u and "/ct-p/" in u:
         return True
-    # Block help.sap.com product roots — any URL with fewer than 4 path segments after domain.
-    # Valid article URLs have the form: /docs/<product>/<lang_or_guid>/<topic_id>[.html]
-    # Root URLs have the form: /docs/<product> or /viewer/product/<product> — 2-3 segments only.
+    # Block help.sap.com URLs that are too shallow (product roots / category pages).
     if "help.sap.com" in u:
         try:
-            from urllib.parse import urlparse
             path = urlparse(u).path.strip("/")
             segments = [s for s in path.split("/") if s]
-            if len(segments) < 4:
+            if len(segments) < 3:
                 return True
         except Exception:
             pass
     return False
+
+
+_URL_VALIDATE_TIMEOUT = 8  # seconds per request
+
+# SAP Help Portal Search API — used to validate slug-based URLs that have no GUID.
+_SAP_HELP_SEARCH_API = "https://help.sap.com/http.svc/search"
+
+
+def _validate_help_url(url: str, title: str = "") -> str | None:
+    """Validate a help.sap.com URL. Returns a canonical GUID-based URL if found, else None.
+
+    Strategy:
+    - If the URL already contains a 32-char hex GUID → accept as-is (canonical).
+    - Otherwise (slug-based, likely LLM-fabricated) → query the SAP Help Search API
+      using the title/slug keywords to find the real canonical URL.
+      Accepts a result if its title closely matches the provided title.
+    """
+    path = urlparse(url).path.strip("/")
+
+    # URLs with GUID are canonical — pass directly
+    if re.search(r'[0-9a-f]{32}', path):
+        return url
+
+    # Slug-based URL: extract topic keywords from path
+    segments = [s for s in path.split("/") if s]
+    topic_segments = segments[2:] if len(segments) > 2 else segments
+    slug_keywords = " ".join(s.replace("-", " ").replace("_", " ") for s in topic_segments)
+    query = title if title else slug_keywords
+
+    if not query or len(query) < 3:
+        return None
+
+    # Normalise title for comparison
+    def _norm(s):
+        return set(s.lower().replace("-", " ").replace("_", " ").split())
+
+    query_words = _norm(query)
+
+    try:
+        resp = requests.get(
+            _SAP_HELP_SEARCH_API,
+            params={"q": query, "state": "PRODUCTION", "locale": "en-US", "top": "5"},
+            timeout=_URL_VALIDATE_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json().get("data", {})
+        results = data.get("results", [])
+        if not results:
+            return None
+
+        # Accept first result whose title shares significant overlap with the query.
+        # This prevents returning a completely unrelated article.
+        for r in results:
+            r_title_words = _norm(r.get("title", ""))
+            # At least 50% of query words (min 2) should appear in the result title
+            overlap = query_words.intersection(r_title_words)
+            threshold = max(2, len(query_words) // 2)
+            if len(overlap) >= threshold:
+                canonical_path = r.get("url", "")
+                if canonical_path:
+                    base = canonical_path.split("?")[0]
+                    return f"https://help.sap.com{base}"
+
+        # Fallback: if no title-matched result but first result is from same product family,
+        # still accept it (SAP product naming is inconsistent across URL slugs vs API IDs)
+        first = results[0]
+        r_product = (first.get("product", "") + " " + first.get("productId", "")).lower()
+        # Check if any segment from the URL appears in the product string
+        url_segments_lower = {s.replace("-", " ").replace("_", " ") for s in segments[1:3]} if len(segments) > 1 else set()
+        for seg in url_segments_lower:
+            seg_words = seg.split()
+            if any(w in r_product for w in seg_words if len(w) > 3):
+                canonical_path = first.get("url", "")
+                if canonical_path:
+                    base = canonical_path.split("?")[0]
+                    return f"https://help.sap.com{base}"
+
+        return None
+    except Exception:
+        pass
+    return None
+
+
+def _url_is_alive(url: str) -> bool:
+    """Return True if the URL responds with HTTP 2xx/3xx (i.e. page exists).
+    Uses GET because some sites (community.sap.com) block HEAD requests.
+    help.sap.com validation is handled separately by _validate_help_url.
+    """
+    if "help.sap.com" in url:
+        return True  # validation handled by _validate_help_url
+    try:
+        resp = requests.get(
+            url,
+            timeout=_URL_VALIDATE_TIMEOUT,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            stream=True,  # Don't download full body
+        )
+        resp.close()
+        return resp.status_code < 400
+    except Exception:
+        return False
+
+
+def _validate_documentation_urls(docs: list[dict]) -> list[dict]:
+    """
+    Validate documentation URLs in parallel.
+    - help.sap.com slug URLs → resolved to canonical GUID URLs via Search API.
+    - help.sap.com GUID URLs → passed as-is (already canonical).
+    - Other domains → HTTP GET check (status < 400).
+    Returns only entries whose URLs are verified; may rewrite help.sap.com URLs to canonical form.
+    """
+    if not docs:
+        return []
+
+    def _check(entry):
+        url = entry.get("url", "") if isinstance(entry, dict) else str(entry)
+        title = entry.get("title", "") if isinstance(entry, dict) else ""
+        if not url or not url.startswith("http"):
+            return None
+
+        if "help.sap.com" in url:
+            canonical = _validate_help_url(url, title)
+            if canonical:
+                if isinstance(entry, dict):
+                    entry = dict(entry)  # shallow copy
+                    entry["url"] = canonical
+                return entry
+            log.info("   INVALID help.sap.com url (no match in Search API): %s", url)
+            return None
+
+        if _url_is_alive(url):
+            return entry
+        log.info("   DEAD url (HTTP check failed): %s", url)
+        return None
+
+    valid = []
+    with ThreadPoolExecutor(max_workers=min(len(docs), 5)) as pool:
+        # Map futures to original index to preserve order
+        futures = {pool.submit(_check, d): i for i, d in enumerate(docs)}
+        results_by_idx = {}
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            result = fut.result()
+            if result is not None:
+                results_by_idx[idx] = result
+
+    # Return in original order
+    return [results_by_idx[i] for i in sorted(results_by_idx)]
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +565,43 @@ def write_excel_output(
                 else:
                     lines.append(ln)
             r["documentation"] = "\n".join(lines) if lines else None
+
+    # --- Validate documentation URLs (resolve help.sap.com, HTTP check others) ---
+    for r in rows:
+        docs = r.get("documentation")
+        if isinstance(docs, list) and docs:
+            r["documentation"] = _validate_documentation_urls(docs) or None
+        elif isinstance(docs, str) and docs.strip():
+            # Extract URLs from text lines, validate, keep only valid lines
+            lines = docs.splitlines()
+            url_lines = []
+            for ln in lines:
+                urls_in_line = re.findall(r'https?://[^\s\)]+', ln)
+                if urls_in_line:
+                    url_lines.append((ln, urls_in_line[0]))
+                else:
+                    url_lines.append((ln, None))
+            # Validate all URLs in parallel
+            urls_to_check = [u for _, u in url_lines if u]
+            alive_set = set()
+            if urls_to_check:
+                with ThreadPoolExecutor(max_workers=min(len(urls_to_check), 5)) as pool:
+                    def _check_str_url(u):
+                        if "help.sap.com" in u:
+                            return (u, _validate_help_url(u) is not None)
+                        return (u, _url_is_alive(u))
+                    futures = {pool.submit(_check_str_url, u): u for u in urls_to_check}
+                    for fut in as_completed(futures):
+                        url_val, is_ok = fut.result()
+                        if is_ok:
+                            alive_set.add(url_val)
+                        else:
+                            log.info("   DEAD url (validation failed): %s", url_val)
+            kept_lines = []
+            for ln, url in url_lines:
+                if url is None or url in alive_set:
+                    kept_lines.append(ln)
+            r["documentation"] = "\n".join(kept_lines) if kept_lines else None
 
     # Determine output columns — inject Solution Area after Solution if any row has it
     # Keys must match the normalised form (lowercase, underscores → spaces)

@@ -1,7 +1,7 @@
 
 
 <p align="center">
-  <img src="data/images/typo.png" alt="AVA — Autonomous Value Advisory" width="400" />
+  <img src="data/images/ava.jpg" alt="AVA — Autonomous Value Advisory" width="800" />
 </p>
 
 Turn years of SAP Solution Value Advisory knowledge into instant, evidence-backed recommendations.
@@ -282,7 +282,7 @@ python ingestion/ingest_knowledge.py data/legacy/SAP_Ariba_VLM_Index_Complete.xl
 
 ```bash
 # HTTP mode for Joule Desktop
-python server/server.py --http --port 8000
+
 
 # stdio mode for Claude Desktop
 python server/server.py

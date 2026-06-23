@@ -4,6 +4,7 @@ pandas>=2.0.0                  # Excel parsing
 openpyxl>=3.1.0               # Excel reading/writing
 hdbcli>=2.20.0                # HANA Cloud connection
 python-dotenv>=1.0.0          # Load .env credentials
+requests>=2.31.0              # SAP Help Portal URL validation via Search API
 mcp==1.9.4                    # MCP server framework (pinned for pydantic compatibility)
 uvicorn>=0.29.0               # ASGI server for HTTP transport (Joule Desktop / CF)
 langdetect>=1.0.9             # Language detection for pain point rows

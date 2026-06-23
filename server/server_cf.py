@@ -53,8 +53,13 @@ mcp = FastMCP(
     stateless_http=True,
     instructions=f"""
 TOOL POLICY — STRICT. Violation = wrong behavior.
-  ALLOWED tools: query_single_pain_point | retrieve_knowledge_context | list_ingested_solutions
-  FORBIDDEN: terminal commands, Python scripts, local file reads, any code execution.
+  MCP tools (provided by this server):
+    - query_single_pain_point
+    - retrieve_knowledge_context
+    - list_ingested_solutions
+  Built-in tools (Joule Desktop):
+    - web_search (REQUIRED for documentation — see step 2.7 in the instructions below)
+  FORBIDDEN: terminal commands, Python scripts, local file reads, any code execution, any tool not listed above.
 
 {SINGLE_QUERY_INSTRUCTIONS}
 """,
