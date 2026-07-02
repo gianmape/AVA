@@ -51,12 +51,22 @@ from shared.config import (
 VECTOR_SEARCH_SQL = """
 SELECT TOP {top_k}
     ID, PAIN_POINT, SOLUTION_AREA, RECOMMENDATION, CATEGORY,
-    EFFORT, BENEFITS, TIMELINE, IMPACT
+    EFFORT, BENEFITS, TIMELINE, IMPACT,
+    COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) AS SCORE,
+    COALESCE(USE_COUNT, 0) AS USE_COUNT,
+    COALESCE(QUALITY_SCORE, 0) AS QUALITY_SCORE
 FROM SVA2.PAIN_POINTS
 WHERE SOLUTION = ?
 {area_filter}
-ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
+ORDER BY SCORE DESC
 """
+
+# Minimum cosine similarity threshold — cases below this are considered irrelevant
+_SIMILARITY_THRESHOLD = 0.55
+
+# Quality weighting: final_score = cosine_score + (quality_bonus * _QUALITY_WEIGHT)
+# quality_bonus = quality_score if available, else log2(use_count+1)/10 as usage signal
+_QUALITY_WEIGHT = 0.05
 
 KNOWLEDGE_SEARCH_SQL = """
 SELECT TOP {top_k}
@@ -177,24 +187,274 @@ def _validate_help_url(url: str, title: str = "") -> str | None:
                     base = canonical_path.split("?")[0]
                     return f"https://help.sap.com{base}"
 
-        # Fallback: if no title-matched result but first result is from same product family,
-        # still accept it (SAP product naming is inconsistent across URL slugs vs API IDs)
-        first = results[0]
-        r_product = (first.get("product", "") + " " + first.get("productId", "")).lower()
-        # Check if any segment from the URL appears in the product string
-        url_segments_lower = {s.replace("-", " ").replace("_", " ") for s in segments[1:3]} if len(segments) > 1 else set()
-        for seg in url_segments_lower:
-            seg_words = seg.split()
-            if any(w in r_product for w in seg_words if len(w) > 3):
-                canonical_path = first.get("url", "")
-                if canonical_path:
-                    base = canonical_path.split("?")[0]
-                    return f"https://help.sap.com{base}"
-
+        # No title-matched result found — reject to avoid returning unrelated articles
         return None
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Server-side documentation search (SAP Help Portal)
+# ---------------------------------------------------------------------------
+_SEARCH_STOP_WORDS = {
+    # English
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "in", "of", "for", "and", "or", "that", "this", "with", "not",
+    "it", "on", "at", "by", "from", "as", "but", "no", "we", "our",
+    "have", "has", "had", "do", "does", "did", "can", "could", "would",
+    "should", "will", "shall", "may", "might", "very", "also", "just",
+    "than", "then", "so", "if", "when", "which", "who", "how", "what",
+    "there", "their", "they", "them", "its", "my", "your", "all", "each",
+    "been", "being", "some", "only", "other", "into", "more", "such",
+    "need", "needs", "want", "wants", "like", "make", "made", "after",
+    "before", "between", "through", "during", "about", "above", "below",
+    "live", "post", "goes", "going", "work", "works", "used", "using",
+    # Spanish — common verbs, prepositions, connectors, filler words
+    "el", "la", "los", "las", "de", "en", "que", "es", "un", "una",
+    "por", "con", "para", "se", "del", "al", "su", "como", "más",
+    "pero", "sus", "le", "ya", "o", "este", "esta", "ha", "me", "sin",
+    "sobre", "ser", "todo", "desde", "son", "entre", "cuando", "muy",
+    "tiene", "tiene", "sido", "hay", "esto", "eso", "así", "otro",
+    "otra", "otros", "bien", "puede", "todos", "estas", "estos",
+    "ella", "ellos", "ante", "solo", "hacia", "donde", "ahora",
+    "parte", "después", "cada", "hacer", "mismo", "poder", "sino",
+    "hecho", "forma", "aquí", "pues", "debe", "vez", "existe",
+    "tener", "también", "fueron", "porque", "nada", "mucho",
+    "tiempo", "manera", "fuera", "mejor", "gran", "sea", "dos",
+    "cual", "caso", "bajo", "esos", "momento", "dicho", "sido",
+    "tanto", "además", "tiene", "asociado", "asociada", "tarea",
+    "tareas", "proceso", "manera", "tienen", "puede", "pueden",
+    "existe", "cuando", "ejemplo", "necesario", "actualmente",
+    "embargo", "realizar", "realiza", "posible", "debido",
+    "través", "respecto", "algunas", "algunos", "siempre",
+    "problema", "problemas", "generar", "genera", "permite",
+    # Additional Spanish noise words found in pain points
+    "estan", "están", "funciona", "funciono", "funcionó", "funcionar",
+    "nivel", "niveles", "ambiente", "anterior", "anteriores",
+    "gestionar", "gestión", "gestion", "usarse", "usando", "usan",
+    "aplican", "aplica", "aplica", "eliminar", "eliminados",
+    "sistema", "sistemas", "deben", "deberia", "debería",
+    "activo", "activa", "activar", "activado", "activada",
+    "empleando", "emplear", "emplea", "usar", "usados", "usadas",
+    "copia", "copiar", "copiado", "copiada", "copian", "copio",
+    "escenario", "escenarios", "ningun", "ningún", "ninguna",
+    "manualmente", "manual", "manuales",
+    "bases", "base", "seccion", "sección", "area", "áreas",
+    "dejarlos", "dejar", "subir", "suben", "sube",
+    "publicado", "publicada", "publicar",
+    "lleva", "llevan", "llevar", "seguir", "siguen",
+    "preguntas", "pregunta", "contestar",
+    "adaptarse", "adaptar", "adaptado",
+    "caracteristicas", "característica", "características",
+    "resumen", "ejecutivo", "contenido",
+    "estado", "estados", "dada", "dado", "dados",
+    "hace", "hacen", "ariba",  # "ariba" is covered by solution name already
+    "cmpc",  # client-specific name, not a SAP search term
+}
+
+
+def _extract_keywords(text: str, max_words: int = 8) -> str:
+    """Extract meaningful keywords from pain point text for search API query.
+
+    Strategy:
+    1. Strip punctuation, split to tokens.
+    2. Remove stop words (English + Spanish).
+    3. Score each token:
+       - Domain-mapped Spanish terms (in _SAP_TERM_MAP): score = 20 + len(translation)
+         These are the most reliable signal — always prioritize them.
+       - Non-mapped words ≥7 chars: score = len(word)  (long = more specific)
+       - Non-mapped words 4–6 chars: score = 0  (too short/generic — skip unless nothing else)
+    4. Take top-scored, deduplicate, restore original sentence order.
+    """
+    words = re.sub(r'[^\w\s]', ' ', text.lower()).split()
+    meaningful = [w for w in words if w not in _SEARCH_STOP_WORDS and len(w) >= 4]
+
+    scored = []
+    for pos, w in enumerate(meaningful):
+        translated = _SAP_TERM_MAP.get(w, w)
+        if translated != w:
+            # Domain-mapped Spanish term: highest priority
+            score = 20 + len(translated)
+        elif len(w) >= 7:
+            # Long unmapped word: moderate priority
+            score = len(w)
+        else:
+            # Short unmapped word: lowest priority (likely noise in Spanish text)
+            score = 0
+        scored.append((score, pos, translated))
+
+    # Pick top-scored, then restore sentence order; deduplicate
+    top_by_score = sorted(scored, key=lambda x: (-x[0], x[1]))[:max_words]
+    top_by_score.sort(key=lambda x: x[1])
+    seen: set[str] = set()
+    top = []
+    for _, _, t in top_by_score:
+        if t not in seen:
+            seen.add(t)
+            top.append(t)
+
+    return " ".join(top)
+
+
+# Common Spanish→English SAP domain term mappings for search API
+_SAP_TERM_MAP = {
+    "aprobacion": "approval", "aprobación": "approval", "aprobada": "approval",
+    "aprobado": "approval", "aprobar": "approval", "aprobaciones": "approvals",
+    "formulario": "form", "formularios": "forms",
+    "recomendaciones": "recommendations", "recomendacion": "recommendation",
+    "funcionalidades": "features", "funcionalidad": "feature",
+    "inteligencia": "intelligence", "artificial": "artificial",
+    "manejo": "management",
+    "proveedor": "supplier", "proveedores": "suppliers",
+    "compra": "purchase", "compras": "purchasing",
+    "contrato": "contract", "contratos": "contracts",
+    "factura": "invoice", "facturas": "invoices",
+    "catalogo": "catalog", "catálogo": "catalog",
+    "solicitud": "requisition", "solicitudes": "requisitions",
+    "subasta": "auction", "subastas": "auctions",
+    "licitacion": "sourcing", "licitación": "sourcing",
+    "evento": "event", "eventos": "events",
+    "notificacion": "notification", "notificaciones": "notifications",
+    "notificación": "notification",
+    "configuracion": "configuration", "configuración": "configuration",
+    "flujo": "workflow", "flujos": "workflows",
+    "usuario": "user", "usuarios": "users",
+    "campo": "field", "campos": "fields",
+    "informe": "report", "informes": "reports",
+    "reporte": "report", "reportes": "reports",
+    "plantilla": "template", "plantillas": "templates",
+    "evaluacion": "evaluation", "evaluación": "evaluation",
+    "puntuacion": "scoring", "puntuación": "scoring",
+    "adjudicacion": "award", "adjudicación": "award",
+    "negociacion": "negotiation", "negociación": "negotiation",
+    "gasto": "spend", "gastos": "spend",
+    "presupuesto": "budget", "presupuestos": "budgets",
+    "pedido": "order", "pedidos": "orders",
+    "recepcion": "receipt", "recepción": "receipt",
+    "pago": "payment", "pagos": "payments",
+    "riesgo": "risk", "riesgos": "risks",
+    "cumplimiento": "compliance",
+    "desempeño": "performance", "rendimiento": "performance",
+    "clasificacion": "classification", "clasificación": "classification",
+    "integracion": "integration", "integración": "integration",
+    "automatizacion": "automation", "automatización": "automation",
+    "documento": "document", "documentos": "documents",
+    "proyecto": "project", "proyectos": "projects",
+    "regla": "rule", "reglas": "rules",
+    "condicion": "condition", "condiciones": "conditions", "condición": "condition",
+    "precio": "price", "precios": "prices",
+    "oferta": "bid", "ofertas": "bids",
+    "respuesta": "response", "respuestas": "responses",
+    "calificacion": "qualification", "calificación": "qualification",
+    "registro": "registration",
+    "cuestionario": "questionnaire", "cuestionarios": "questionnaires",
+    "categoria": "category", "categoría": "category", "categorias": "categories",
+    "desaparece": "disappears", "desaparecen": "disappear",
+    "visible": "visible", "visibilidad": "visibility",
+    "permiso": "permission", "permisos": "permissions",
+    "acceso": "access",
+    "error": "error", "errores": "errors",
+    "carga": "upload", "cargar": "upload",
+    "descarga": "download", "descargar": "download",
+    "archivo": "file", "archivos": "files",
+    "correo": "email", "correos": "emails",
+    # Batch pain points — terms not yet covered
+    "adjudicacion": "award", "adjudicación": "award", "adjudicaciones": "awards",
+    "replicando": "replication", "replicar": "replicate", "replica": "replication",
+    "integracion": "integration", "integración": "integration",
+    "guided": "guided", "guiado": "guided", "guiada": "guided",
+    "clasico": "classic", "clásico": "classic",
+    "ponderacion": "weighting", "ponderación": "weighting",
+    "sobres": "sealed bid envelopes",
+    "dashboard": "dashboard", "dashboards": "dashboards",
+    "clausula": "clause", "cláusula": "clause", "clausulas": "clauses",
+    "repositorio": "repository",
+    "firma": "signature", "firmar": "signature",
+    "adjunto": "attachment", "adjuntos": "attachments",
+    "boletin": "bulletin", "boletín": "bulletin",
+    "espacio": "workspace", "espacios": "workspaces",
+    "encuesta": "survey", "encuestas": "surveys",
+    "cotizacion": "quote", "cotización": "quote", "cotizaciones": "quotes",
+    "calendario": "calendar",
+    "tarea": "task", "tareas": "tasks",
+    "revision": "review", "revisión": "review",
+    "grupos": "groups", "grupo": "group",
+    "migración": "migration", "migracion": "migration",
+}
+
+
+def search_documentation(
+    pain_point: str,
+    solution: str,
+    max_results: int = 3,
+    recommendation_hint: str = "",
+) -> list[dict]:
+    """Search SAP Help Portal for documentation relevant to a pain point.
+
+    Queries the SAP Help Search API and returns up to max_results entries
+    as [{"title": ..., "url": ...}] with canonical URLs.
+    Returns [] on error or if no qualifying results found.
+
+    Query strategy:
+    - If recommendation_hint is provided: use it as the primary query.
+      The hint is already in English and synthesized by Joule, so it is
+      more precise than keywords extracted from a raw Spanish pain point.
+    - Otherwise: fall back to _extract_keywords(pain_point) for the query.
+    """
+    if recommendation_hint:
+        primary_query = f"{solution} {recommendation_hint.strip()[:80]}".strip()
+        log.info("   search_documentation: using hint as primary query: %s", primary_query[:120])
+    else:
+        keywords = _extract_keywords(pain_point)
+        primary_query = f"{solution} {keywords}".strip()
+
+    if len(primary_query) < 5:
+        return []
+
+    def _run_query(query: str) -> list[dict]:
+        try:
+            resp = requests.get(
+                _SAP_HELP_SEARCH_API,
+                params={"q": query, "state": "PRODUCTION", "locale": "en-US", "top": "8"},
+                timeout=_URL_VALIDATE_TIMEOUT,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if resp.status_code != 200:
+                return []
+            results = resp.json().get("data", {}).get("results", [])
+            if not results:
+                return []
+
+            docs = []
+            for r in results:
+                raw_path = r.get("url", "")
+                if not raw_path:
+                    continue
+                url = f"https://help.sap.com{raw_path.split('?')[0]}"
+                if _is_blocked(url):
+                    continue
+                path = urlparse(url).path.strip("/")
+                segments = [s for s in path.split("/") if s]
+                if len(segments) < 3:
+                    continue
+                docs.append({"title": r.get("title", "SAP Documentation"), "url": url})
+                if len(docs) >= max_results:
+                    break
+            return docs
+        except Exception:
+            return []
+
+    docs = _run_query(primary_query)
+
+    # Fallback: if hint was primary and returned nothing, retry with pain point keywords
+    if not docs and recommendation_hint:
+        keywords = _extract_keywords(pain_point)
+        fallback_query = f"{solution} {keywords}".strip()
+        log.info("   search_documentation: hint query empty, retrying with keywords: %s", fallback_query[:120])
+        docs = _run_query(fallback_query)
+
+    return docs
 
 
 def _url_is_alive(url: str) -> bool:
@@ -355,14 +615,47 @@ def read_excel_painpoints(input_path: str) -> list[dict]:
     # Detect language for all rows in parallel
     import concurrent.futures
 
-    def _detect(pain_point: str) -> str:
+    # Spanish indicators for context-based fallback on short texts
+    _ES_INDICATORS = {
+        "gestión", "gestion", "integración", "integracion", "configuración",
+        "configuracion", "aprobación", "aprobacion", "administración",
+        "proveedor", "proveedores", "compras", "contrato", "contratos",
+        "factura", "solicitud", "catálogo", "catalogo", "licitación",
+        "autoría", "autoria", "reportes", "análisis", "analisis",
+    }
+
+    def _detect(row: dict) -> str:
+        pain_point = row["pain_point"]
+        solution_area = row.get("solution_area") or ""
+
+        # For short texts, langdetect is unreliable — use context heuristics
+        if len(pain_point) < 20:
+            # Check if solution_area or pain_point contains Spanish indicators
+            combined = (pain_point + " " + solution_area).lower()
+            if any(ind in combined for ind in _ES_INDICATORS):
+                return "es"
+            # Check for common Spanish characters
+            if any(c in pain_point for c in "áéíóúñ¿¡"):
+                return "es"
+            return "en"
+
         try:
-            return _detect_lang(pain_point)
+            detected = _detect_lang(pain_point)
+            # langdetect sometimes confuses short Spanish for Portuguese or Italian
+            # If solution_area is clearly Spanish, trust that over langdetect
+            if detected in ("pt", "it", "ca", "gl") and solution_area:
+                area_lower = solution_area.lower()
+                if any(ind in area_lower for ind in _ES_INDICATORS):
+                    return "es"
+            return detected
         except LangDetectException:
+            # Fallback: check context
+            if solution_area and any(ind in solution_area.lower() for ind in _ES_INDICATORS):
+                return "es"
             return "en"
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(raw_rows), 8)) as pool:
-        langs = list(pool.map(_detect, [r["pain_point"] for r in raw_rows]))
+        langs = list(pool.map(_detect, raw_rows))
 
     rows = []
     for r, lang in zip(raw_rows, langs):
@@ -391,10 +684,10 @@ def retrieve_similar_cases(
     vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
     area_filter  = "AND SOLUTION_AREA = ?" if area else ""
 
-    positional = [solution]
+    # Vector param goes first (used in SELECT COSINE_SIMILARITY), then WHERE params
+    positional = [vector_str, solution]
     if area:
         positional.append(area)
-    positional.append(vector_str)
 
     conn   = hana_connection()
     cursor = conn.cursor()
@@ -404,8 +697,32 @@ def retrieve_similar_cases(
             positional,
         )
         cols = ["id", "pain_point", "solution_area", "recommendation", "category",
-                "effort", "benefits", "timeline", "impact"]
+                "effort", "benefits", "timeline", "impact", "score",
+                "use_count", "quality_score"]
         raw = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+        # Filter out cases below the similarity threshold
+        raw = [r for r in raw if (r.get("score") or 0) >= _SIMILARITY_THRESHOLD]
+
+        # Compute weighted score: cosine + quality bonus
+        # quality_score (0-1) takes priority if set; otherwise use log2(use_count) as proxy
+        import math
+        for r in raw:
+            cosine = r.get("score") or 0
+            qs = r.get("quality_score") or 0
+            uc = r.get("use_count") or 0
+            quality_bonus = qs if qs > 0 else (math.log2(uc + 1) / 10.0)
+            r["weighted_score"] = cosine + (quality_bonus * _QUALITY_WEIGHT)
+
+        # Re-sort by weighted score (may reorder when cosine scores are close)
+        raw.sort(key=lambda r: r["weighted_score"], reverse=True)
+
+        if raw:
+            log.info("retrieve_similar_cases: %d cases above threshold %.2f (top score: %.3f, weighted: %.3f)",
+                     len(raw), _SIMILARITY_THRESHOLD, raw[0]["score"], raw[0]["weighted_score"])
+        else:
+            log.info("retrieve_similar_cases: no cases above threshold %.2f for '%s'",
+                     _SIMILARITY_THRESHOLD, pain_point[:80])
 
         # Increment USE_COUNT in a single bulk UPDATE instead of N individual queries
         if raw:
@@ -428,6 +745,7 @@ def retrieve_similar_cases(
             "effort":             r["effort"],
             "timeline":           r["timeline"],
             "impact":             r["impact"],
+            "similarity_score":   round(r["score"], 3),
         }
         for r in raw
     ]
@@ -443,7 +761,11 @@ def retrieve_similar_cases_batch(
 
     items: list of {idx, pain_point, solution, area (optional)}
     Returns: list of {idx, cases: [...]} in the same order as items.
+    Includes circuit breaker: if >50% of tasks fail, aborts remaining and returns partial results.
     """
+    if not items:
+        return []
+
     import concurrent.futures
 
     def _search_one(item):
@@ -455,8 +777,55 @@ def retrieve_similar_cases_batch(
         )
         return {"idx": item["idx"], "cases": cases}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(items), 10)) as pool:
-        results = list(pool.map(_search_one, items))
+    results = []
+    failures = 0
+    total = len(items)
+    circuit_broken = False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(total, 10)) as pool:
+        future_to_item = {pool.submit(_search_one, item): item for item in items}
+
+        for future in concurrent.futures.as_completed(future_to_item):
+            item = future_to_item[future]
+            try:
+                result = future.result(timeout=30)
+                results.append(result)
+            except Exception as e:
+                failures += 1
+                log.warning("retrieve_similar_cases_batch: failure for idx=%s: %s",
+                            item.get("idx"), e)
+                results.append({"idx": item["idx"], "cases": [], "error": str(e)})
+
+                # Circuit breaker: if >50% failed, cancel remaining futures
+                if failures > total / 2 and not circuit_broken:
+                    circuit_broken = True
+                    log.error("CIRCUIT BREAKER: %d/%d failures — cancelling remaining tasks", failures, total)
+                    for f in future_to_item:
+                        f.cancel()
+                    # Fill remaining with empty results
+                    submitted_idxs = {r["idx"] for r in results}
+                    for remaining_item in items:
+                        if remaining_item["idx"] not in submitted_idxs:
+                            results.append({
+                                "idx": remaining_item["idx"],
+                                "cases": [],
+                                "error": "circuit_breaker_triggered",
+                            })
+                    break
+
+    # Sort by idx to maintain consistent order
+    results.sort(key=lambda r: r.get("idx", 0))
+
+    # Telemetry: log average similarity score across the batch for corpus health monitoring
+    all_scores = [c["similarity_score"] for r in results for c in r["cases"] if "similarity_score" in c]
+    if all_scores:
+        avg_score = sum(all_scores) / len(all_scores)
+        empty_count = sum(1 for r in results if not r["cases"])
+        log.info("BATCH TELEMETRY: %d items | avg_similarity=%.3f | min=%.3f | max=%.3f | empty=%d/%d",
+                 len(items), avg_score, min(all_scores), max(all_scores), empty_count, len(items))
+    else:
+        log.warning("BATCH TELEMETRY: %d items | ALL returned empty (no cases above threshold %.2f)",
+                    len(items), _SIMILARITY_THRESHOLD)
 
     return results
 
@@ -529,18 +898,94 @@ def write_excel_output(
         "medium":  "Medium (1 – 3 Weeks)",
         "high":    "High (1 – 2 Months)",
         "complex": "Complex (3+ Months)",
+        "n/a":     "N/A",
+        # Spanish aliases
+        "bajo":    "Low (1 – 3 Days)",
+        "medio":   "Medium (1 – 3 Weeks)",
+        "alta":    "High (1 – 2 Months)",
+        "alto":    "High (1 – 2 Months)",
+        "complejo": "Complex (3+ Months)",
+        # Portuguese aliases
+        "baixo":   "Low (1 – 3 Days)",
+        "médio":   "Medium (1 – 3 Weeks)",
+        "medio":   "Medium (1 – 3 Weeks)",
+        "alto":    "High (1 – 2 Months)",
+        "complexo": "Complex (3+ Months)",
     }
     _TIMELINE_MAP = {
         "quick win":   "Quick Win (Within 1 week)",
         "short term":  "Short Term (1 – 3 Weeks)",
         "mid term":    "Mid Term (1 – 3 Months)",
         "long term":   "Long Term (3+ Months)",
+        # Spanish aliases
+        "rapido":      "Quick Win (Within 1 week)",
+        "rápido":      "Quick Win (Within 1 week)",
+        "corto plazo": "Short Term (1 – 3 Weeks)",
+        "mediano plazo": "Mid Term (1 – 3 Months)",
+        "largo plazo": "Long Term (3+ Months)",
+        # Portuguese aliases
+        "rápido":      "Quick Win (Within 1 week)",
+        "curto prazo": "Short Term (1 – 3 Weeks)",
+        "médio prazo": "Mid Term (1 – 3 Months)",
+        "medio prazo": "Mid Term (1 – 3 Months)",
+        "longo prazo": "Long Term (3+ Months)",
     }
     for r in rows:
         for field, mapping in (("effort", _EFFORT_MAP), ("timeline", _TIMELINE_MAP)):
             val = r.get(field)
             if val:
                 r[field] = mapping.get(val.strip().lower(), val)
+
+    # --- Validate Effort, Timeline, Category values against valid taxonomy ---
+    _VALID_EFFORTS = {
+        "Low (1 – 3 Days)", "Medium (1 – 3 Weeks)", "High (1 – 2 Months)",
+        "Complex (3+ Months)", "N/A",
+    }
+    _VALID_TIMELINES = {
+        "Quick Win (Within 1 week)", "Short Term (1 – 3 Weeks)",
+        "Mid Term (1 – 3 Months)", "Long Term (3+ Months)",
+    }
+    _VALID_CATEGORIES = {
+        "Feature Adoption", "Innovation", "Q&A", "Process Change",
+        "Training", "Roadmap Discussion",
+    }
+    # Common misspellings / case variants → canonical form
+    _CATEGORY_ALIASES = {
+        "feature adoption": "Feature Adoption",
+        "innovation": "Innovation",
+        "q&a": "Q&A",
+        "qa": "Q&A",
+        "process change": "Process Change",
+        "training": "Training",
+        "roadmap discussion": "Roadmap Discussion",
+        "roadmap": "Roadmap Discussion",
+        "configuration": "Feature Adoption",
+        "adopción de funcionalidad": "Feature Adoption",
+        "innovación": "Innovation",
+        "cambio de proceso": "Process Change",
+        "capacitación": "Training",
+        "entrenamiento": "Training",
+    }
+    for r in rows:
+        idx = r.get("idx", "?")
+        # Validate Effort
+        effort = r.get("effort")
+        if effort and effort not in _VALID_EFFORTS:
+            log.warning("Row %s: invalid Effort value '%s' — writing as-is", idx, effort)
+        # Validate Timeline
+        timeline = r.get("timeline")
+        if timeline and timeline not in _VALID_TIMELINES:
+            log.warning("Row %s: invalid Timeline value '%s' — writing as-is", idx, timeline)
+        # Validate and correct Category
+        category = r.get("category")
+        if category:
+            if category not in _VALID_CATEGORIES:
+                corrected = _CATEGORY_ALIASES.get(category.strip().lower())
+                if corrected:
+                    log.info("Row %s: corrected Category '%s' → '%s'", idx, category, corrected)
+                    r["category"] = corrected
+                else:
+                    log.warning("Row %s: invalid Category value '%s' — writing as-is", idx, category)
 
     # --- Strip blocked / generic documentation URLs ---
     for r in rows:
@@ -635,6 +1080,7 @@ def write_excel_output(
     cell_align = Alignment(vertical="top", wrap_text=True, horizontal="left")
 
     from openpyxl.styles import Border, Side
+    from openpyxl.comments import Comment
     outer = Side(style="medium", color="002A86")
     inner = Side(style="thin",   color="EAECEE")
     wb = openpyxl.Workbook()
@@ -668,6 +1114,16 @@ def write_excel_output(
         cell.alignment = hdr_align
         cell.border    = _border(1, ci)
         ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = col_widths.get(label, 30)
+        # Add explanatory note to Impact header
+        if label == "Impact":
+            cell.comment = Comment(
+                "This column is intentionally left for the consultant to fill.\n"
+                "Impact must be assessed based on the client's specific context,\n"
+                "priorities, and business processes. Values: High / Medium / Low / N/A",
+                "SVA System",
+                width=280,
+                height=80,
+            )
 
     ws.row_dimensions[1].height = 30
 
@@ -778,8 +1234,12 @@ def retrieve_knowledge_context(
     def _search_one(source_type: str) -> tuple[str, list[dict]]:
         # For vlm_kpis, filter by solution so KPIs from other solutions don't
         # crowd out the top_k results (e.g. SLP's 16 rows vs Buying's 29 rows).
-        # next_gen has no solution filter — global search is intentional there.
+        # For next_gen, try solution-filtered first; if empty, fallback to global.
         if source_type == "vlm_kpis" and solution:
+            solution_filter = "AND SOLUTION = ?"
+            positional = [source_type, solution, vector_str]
+        elif source_type == "next_gen" and solution:
+            # Try filtered first — more relevant results for the specific solution
             solution_filter = "AND SOLUTION = ?"
             positional = [source_type, solution, vector_str]
         else:
@@ -798,6 +1258,19 @@ def retrieve_knowledge_context(
                         "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
                         "capability", "kpi_formula", "kpi_meas_freq"]
                 rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+                # Fallback: if next_gen filtered by solution returned empty, retry global
+                if source_type == "next_gen" and not rows and solution_filter:
+                    log.info("   next_gen: no results for solution '%s', falling back to global", solution)
+                    cursor2 = conn.cursor()
+                    try:
+                        cursor2.execute(
+                            KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=""),
+                            [source_type, vector_str],
+                        )
+                        rows = [dict(zip(cols, row)) for row in cursor2.fetchall()]
+                    finally:
+                        cursor2.close()
             finally:
                 cursor.close()
                 release_connection(conn)
@@ -808,5 +1281,18 @@ def retrieve_knowledge_context(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(source_types)) as pool:
         results = dict(pool.map(_search_one, source_types))
+
+    # Deduplicate entries within each source_type by title (exact match)
+    for st in results:
+        seen_titles: set[str] = set()
+        deduped = []
+        for entry in results[st]:
+            title = (entry.get("title") or "").strip().lower()
+            if title and title in seen_titles:
+                continue
+            if title:
+                seen_titles.add(title)
+            deduped.append(entry)
+        results[st] = deduped
 
     return results

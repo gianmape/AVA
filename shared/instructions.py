@@ -59,30 +59,46 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    - pain_point: the full text the user wrote
    - solution: the solution name chosen
 
-2.5 Immediately after query_single_pain_point returns, call retrieve_knowledge_context with:
+   The result includes similar_cases, each with a similarity_score (0–1):
+     - ≥ 0.80: Strong match — anchor your recommendation on this historical case.
+     - 0.65–0.79: Moderate match — use as directional signal but apply your own SAP knowledge.
+     - 0.55–0.64: Weak match — treat as background context only, do NOT anchor on it.
+   Cases below 0.55 are filtered out server-side and will not appear.
+   If similar_cases is empty, generate the recommendation purely from your SAP expertise.
+
+2.5 Immediately after query_single_pain_point returns, draft a 1\u20132 sentence English summary of
+   the recommendation direction (e.g. "Configure approval workflows for sourcing events to enforce
+   weighting and sealed envelopes."). Then call retrieve_knowledge_context with:
    - pain_point: same text as step 2
    - solution: copy the exact value of "validated_solution" from the query_single_pain_point JSON result \u2014 do NOT use the original user input or any other value
    - source_types: ["next_gen", "vlm_kpis"]
-   The result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "vlm_kpis": [...]}}.
+   - recommendation_hint: the English summary you just drafted (used as primary documentation search query \u2014 more accurate than keyword extraction from a raw pain point in Spanish)
+   The result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "vlm_kpis": [...]}, "documentation": [...]}.
    Access next_gen features as: result["results"]["next_gen"]
    Access KPIs as: result["results"]["vlm_kpis"]
+   Access documentation as: result["documentation"] — a list of {"title": ..., "url": ...} dicts (pre-validated)
 
-2.7 WEB SEARCH (mandatory — do this BEFORE writing the card):
-   Perform 1 web search to find specific SAP documentation for this pain point.
-   Search query: "SAP Ariba [solution] [topic keywords] site:help.sap.com OR site:community.sap.com"
-   ONLY use results from: help.sap.com, community.sap.com, SAP release notes.
-   Do NOT use learning.sap.com — the ENTIRE domain is blocked.
-   A qualifying URL must come from the actual search result (never constructed or guessed)
-   and have at least 4 path segments after the domain.
-   If no qualifying URL is found → documentation will be empty (handled in step 3.1).
+2.7 DOCUMENTATION:
+   a) Check retrieve_knowledge_context result for "documentation" key — a list of {"title": ..., "url": ...}.
+      If non-empty: format each entry as a markdown bullet link: \u2022 [title](url)
+      These URLs are pre-validated server-side — include them as-is, do NOT modify them.
+   b) If "documentation" is empty AND web_search is available: perform 1 web search.
+      Query: "SAP Ariba [solution] [topic keywords] site:help.sap.com OR site:community.sap.com"
+      ONLY use results from: help.sap.com, community.sap.com, SAP release notes.
+      Do NOT use learning.sap.com — the ENTIRE domain is blocked.
+      A qualifying URL must come from the actual search result (never constructed or guessed)
+      and have at least 4 path segments after the domain.
+   c) If neither source yields qualifying URLs → omit the DOCUMENTATION section entirely.
 
 3. Synthesize the full recommendation and present the result using ONLY this card format.
    Generate ALL text in the same language as the pain_point.
    Use the context from steps 2, 2.5, and 2.7 to build the card.
 
    3.1 Populate the DOCUMENTATION section:
-       a) From the web search results in step 2.7, select URLs that pass ALL quality rules below.
-       b) If the search returned no qualifying URLs → omit the DOCUMENTATION section entirely.
+       a) Use documentation URLs from step 2.7 (server-provided or web search results).
+          Server-provided URLs (from "documentation" key) are pre-validated — include them as-is.
+          For web search URLs, apply the quality rules below before including.
+       b) If no qualifying URLs from any source → omit the DOCUMENTATION section entirely.
           Do NOT use training knowledge to construct or guess URLs — they are unreliable.
        Do NOT embed links inline within the recommendation text — not as hyperlinks, not as "Más información",
        not as "Ver más", not as footnote-style references. ONLY in DOCUMENTATION bullets.
@@ -115,8 +131,8 @@ When a user describes a pain point in text (without attaching an Excel file), ac
         Always blocked:
           - https://support.ariba.com
           - https://learning.sap.com  (entire domain — URLs are unreliable)
-     4. NEVER guess or construct a URL \u2014 only include URLs that came from a web search result.
-        If the search returned no specific article \u2192 omit the Documentation section entirely.
+     4. NEVER guess or construct a URL \u2014 only include URLs from server-provided "documentation" or actual web search results.
+        If no qualifying URLs from either source \u2192 omit the Documentation section entirely.
 
    Card format \u2014 no extra text before or after:
    DO NOT use Markdown tables anywhere in this card. Use only bold labels, bullets, and plain text.

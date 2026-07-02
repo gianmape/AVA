@@ -278,19 +278,32 @@ python ingestion/ingest_knowledge.py data/legacy/SAP_Ariba_NextGen_Features.xlsx
 python ingestion/ingest_knowledge.py data/legacy/SAP_Ariba_VLM_Index_Complete.xlsx --source-type vlm_kpis
 ```
 
-### 5. Run MCP server
+### 5. Run MCP server locally
 
 ```bash
-# HTTP mode for Joule Desktop
+# HTTP mode — for Joule Desktop (streamable-HTTP, port 8000 by default)
+python server/server.py --http
 
+# Custom port
+python server/server.py --http --port 9000
 
-# stdio mode for Claude Desktop
+# stdio mode — for Claude Desktop
 python server/server.py
 ```
 
+The HTTP server binds to `127.0.0.1:8000` and exposes the MCP endpoint at:
+```
+http://127.0.0.1:8000/mcp
+```
+
+Logs are written to both stderr and `mcp_server.log` in the project root.
+
 ### 6. Connect Joule Desktop
 
-Add MCP server in Joule Desktop settings pointing to `http://127.0.0.1:8000`.
+Add the MCP server in Joule Desktop settings pointing to:
+```
+http://127.0.0.1:8000/mcp
+```
 
 ---
 

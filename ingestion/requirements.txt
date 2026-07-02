@@ -4,3 +4,4 @@ pandas>=2.0.0                  # Excel parsing
 openpyxl>=3.1.0               # Excel reading
 hdbcli>=2.20.0                # HANA Cloud connection
 python-dotenv>=1.0.0          # Load .env credentials
+pypdf>=4.0.0                  # PDF text extraction

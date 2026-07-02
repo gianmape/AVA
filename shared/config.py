@@ -35,6 +35,10 @@ VALID_SOLUTIONS = {
     "Ariba Invoice", "Ariba Reporting", "Ariba Supplier Risk",
     "Ariba Sourcing", "Spend Analysis", "Ariba SIPM",
     "Ariba SLP",
+    # Extended solutions (from IDEAS.md — historical data may use these)
+    "Ariba Buying and Invoicing", "Discount Management",
+    "Business Network Discovery", "Ariba Overall",
+    "Supply Chain Collaboration",
 }
 
 VALID_SOLUTION_AREAS = {
@@ -57,7 +61,7 @@ VALID_SOLUTION_AREAS = {
 }
 
 VALID_CATEGORIES = {
-    "Feature Adoption", "Innovation", "Q&A", "Process Change", "Roadmap Discussion",
+    "Feature Adoption", "Innovation", "Q&A", "Process Change", "Training", "Roadmap Discussion",
 }
 
 VALID_EFFORTS   = {"Low", "Medium", "High", "Complex", "N/A"}
@@ -81,10 +85,27 @@ _EXPLICIT_ALIASES = {
     # Invoice
     "invoice":                              "Ariba Invoice",
     "invoicing":                            "Ariba Invoice",
+    # Sourcing
+    "sourcing":                             "Ariba Sourcing",
+    # Buying
+    "buying":                               "Ariba Buying",
+    "buying and invoicing":                 "Ariba Buying and Invoicing",
+    # Contracts
+    "contracts":                            "Ariba Contracts",
+    # SIPM
+    "sipm":                                 "Ariba SIPM",
     # Others
     "catalog":                              "Ariba Catalog",
     "guided buying":                        "Ariba Guided Buying",
     "spend control tower":                  "Spend Analysis",
+    "reporting":                            "Ariba Reporting",
+    # Extended solutions
+    "discount management":                  "Discount Management",
+    "business network discovery":           "Business Network Discovery",
+    "network discovery":                    "Business Network Discovery",
+    "overall":                              "Ariba Overall",
+    "supply chain collaboration":           "Supply Chain Collaboration",
+    "supply chain":                         "Supply Chain Collaboration",
 }
 
 # Columns to drop — row numbering/IDs from Excel that have no analytical value

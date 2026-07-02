@@ -44,6 +44,7 @@ from server.recommend import (
     retrieve_similar_cases_batch as _retrieve_batch,
     write_excel_output as _write_excel,
     retrieve_knowledge_context as _retrieve_knowledge,
+    search_documentation as _search_docs,
 )
 from shared.config import hana_connection, normalise_solution, release_connection
 
@@ -61,8 +62,9 @@ STRICT TOOL POLICY — only the following tools may be used. No other tools, com
   - write_excel_output
   - list_ingested_solutions
   - query_single_pain_point
+  - rate_recommendation
   Built-in tools (Joule Desktop):
-  - web_search (REQUIRED for documentation — see step 2.5b)
+  - web_search (for additional documentation — server also provides URLs via retrieve_knowledge_context)
 Do NOT execute terminal commands, read local files directly, run Python scripts, or use any tool not listed above.
 Do NOT read JSON files from Joule Desktop temp directories or any other location.
 
@@ -81,36 +83,61 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
    Use similar_pain_point and comments to understand what SAP area to research.
    Use category, effort, timeline, impact as calibration hints for your classifications.
 
+   SIMILARITY SCORE GUIDANCE:
+   Each case includes a similarity_score (0–1). Interpret it as follows:
+     - ≥ 0.80: Strong match — the historical case is highly relevant, anchor your recommendation on it.
+     - 0.65–0.79: Moderate match — use as directional signal but apply your own SAP knowledge.
+     - 0.55–0.64: Weak match — treat as background context only, do NOT anchor on it.
+   Cases below 0.55 are already filtered out by the server and will not appear.
+
 2.5 For EACH row individually, in sequence:
-   a) Call retrieve_knowledge_context with:
+   a) Draft a 1–2 sentence English summary of the recommendation you plan to give for this row.
+      This becomes the recommendation_hint for step b.
+   b) Call retrieve_knowledge_context with:
       - pain_point: the row's pain_point text
       - solution: the row's solution
       - source_types: ["next_gen", "vlm_kpis"]
-   b) Perform 1 web search to find a specific SAP documentation article for this row's pain point.
+      - recommendation_hint: the English summary from step a (REQUIRED — the server uses it as the
+        primary query for documentation search, which is more accurate than keyword extraction
+        from a raw Spanish pain point). Example: "Migrate classic sourcing templates to native
+        guided sourcing project templates and reconfigure review tasks."
+   c) Perform 1 web search to find a specific SAP documentation article for this row's pain point.
       Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
       ONLY use: help.sap.com, community.sap.com, SAP release notes.
       Do NOT use learning.sap.com — the ENTIRE domain is blocked, every URL on it is unreliable.
       Hard cap: MAX 15 searches per batch run. If cap is reached, set documentation=[] for remaining rows.
       A qualifying URL must come from the actual search result (never constructed or guessed) and have
       at least 4 path segments after the domain. If no qualifying URL found → documentation=[].
-   c) Synthesize the full output for this row using your SAP knowledge, the tool result, and the search result.
+   d) Synthesize the full output for this row using your SAP knowledge, the tool result, and the search result.
+      Use the "documentation" field from the retrieve_knowledge_context response as a starting point;
+      complement or replace with the web_search result if it is more specific.
       LANGUAGE RULE: each row includes a `language` field ("es", "en", "pt"). Write ALL generated text
       for that row in that language. "es"=Spanish · "en"=English · "pt"=Portuguese. Never override with English.
-   Repeat a–c for every row before calling write_excel_output.
+   Repeat a–d for every row before calling write_excel_output.
 
    DO NOT call retrieve_knowledge_context_batch — use retrieve_knowledge_context once per row as described above.
 
-3. Call write_excel_output with:
+3. Call write_excel_output EXACTLY ONCE for the entire run — after ALL rows from ALL batches have been synthesized.
+   CRITICAL: write_excel_output overwrites the output file completely each time it is called.
+   If you call it more than once, only the last call's rows will appear in the final file.
+
+   MULTI-BATCH EXAMPLE: If the Excel has 25 rows processed in 3 batches (10 + 10 + 5):
+     - Batch 1: synthesize rows 0–9 → store in memory
+     - Batch 2: synthesize rows 10–19 → store in memory
+     - Batch 3: synthesize rows 20–24 → store in memory
+     - THEN: call write_excel_output ONCE with all 25 rows combined
+
+   Accumulate ALL synthesized rows (all 16, or however many the Excel contained) into a single
+   list and pass them all in one call.
    - input_path: the same attachment path passed to read_excel_painpoints
-   - rows: a list containing ONLY the rows from this batch, each with its original idx value.
+   - rows: the complete list of ALL rows synthesized, each with its original idx value.
      Each row MUST include ALL of these fields:
        pain_point (str): copy from read_excel_painpoints output for this row
        solution (str): copy from read_excel_painpoints output for this row
        Recommendations, Category, Effort, Benefits, Documentation, Timeline, Impact, Ariba Next-Gen, Value KPIs
      pain_point and solution must NEVER be empty or omitted — copy them exactly from step 1.
      LANGUAGE: Recommendations, Benefits, Ariba Next-Gen, Value KPIs MUST be in the same language as the pain point.
-               Pass the exact same text you already generated in step 3 — do NOT translate or rewrite to English.
-   Call write_excel_output once per batch — do NOT wait until all batches are done.
+               Pass the exact same text you already generated — do NOT translate or rewrite to English.
 
 4. After ALL batches are processed and all write_excel_output calls complete, present ONLY this — nothing else:
    a) The message field from write_excel_output.
@@ -409,6 +436,7 @@ def retrieve_knowledge_context(
     pain_point: str,
     solution: str,
     source_types: list[str] | None = None,
+    recommendation_hint: str = "",
 ) -> str:
     """
     Retrieve relevant internal knowledge base entries for a single pain point.
@@ -418,21 +446,29 @@ def retrieve_knowledge_context(
     to the next row.
 
     Args:
-        pain_point:   Pain point text (same as passed to query_single_pain_point).
-        solution:     Canonical solution name (validated_solution from query_single_pain_point result).
-        source_types: Knowledge sources to query. Always pass ["next_gen", "vlm_kpis"].
-                      "next_gen": Next-gen SAP Ariba roadmap features (all solutions)
-                      "vlm_kpis": Value Lever & KPI index (Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk)
-                      Future sources: "ai_scenarios", "premium_services"
+        pain_point:           Pain point text (same as passed to query_single_pain_point).
+        solution:             Canonical solution name (validated_solution from query_single_pain_point result).
+        source_types:         Knowledge sources to query. Always pass ["next_gen", "vlm_kpis"].
+                              "next_gen": Next-gen SAP Ariba roadmap features (all solutions)
+                              "vlm_kpis": Value Lever & KPI index (Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk)
+                              Future sources: "ai_scenarios", "premium_services"
+        recommendation_hint:  Required in batch mode. Short English summary of the recommendation
+                              you plan to synthesize for this row (1–2 sentences, max 80 chars used).
+                              Used as the PRIMARY query for the documentation search — it is already
+                              in English and more precise than keywords from the raw pain point.
+                              If omitted, the server falls back to keyword extraction from pain_point.
+                              Always pass this before or together with synthesizing the row.
+                              the recommendation for this row.
 
     Returns:
-        JSON object with two keys:
+        JSON object with keys:
         - "IMPORTANT_CONTEXT": warnings about next_gen availability — read before synthesizing.
         - "results": dict keyed by source_type, each value a list of matching entries.
           Access as: response["results"]["next_gen"] and response["results"]["vlm_kpis"]
           next_gen entries: {title, content, solution, release, agent_based, joule_based}
           vlm_kpis entries: {title, value_driver, value_lever, kpi_id, kpi_category, kpi_target, capability, kpi_formula, kpi_meas_freq}
           Empty list means no relevant entries found — use the "no coverage" message.
+        - "documentation": list of {"title": ..., "url": ...} — pre-validated SAP Help Portal links.
     """
     if source_types is None:
         source_types = ["next_gen"]
@@ -441,8 +477,8 @@ def retrieve_knowledge_context(
     if solution in _VLM_SOLUTIONS and "vlm_kpis" not in source_types:
         source_types = list(source_types) + ["vlm_kpis"]
 
-    log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | pain_point=%.80s…",
-             solution, source_types, pain_point)
+    log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | hint=%.60s | pain_point=%.80s…",
+             solution, source_types, recommendation_hint, pain_point)
     results = _retrieve_knowledge(pain_point, solution, source_types, top_k=5)
     total = sum(len(v) for v in results.values())
     log.info("   Returned %d entries across %d source(s)", total, len(source_types))
@@ -468,8 +504,118 @@ def retrieve_knowledge_context(
             )
         },
         "results": results,
+        "documentation": _search_docs(
+            pain_point, solution, max_results=3,
+            recommendation_hint=recommendation_hint,
+        ),
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+@mcp.tool()
+def rate_recommendation(
+    pain_point_id: str,
+    rating: str,
+    consultant_id: str = "",
+) -> str:
+    """
+    Rate a historical case that was used in a recommendation — feedback loop for quality improvement.
+
+    Call this when a consultant confirms a recommendation was useful or flags it as irrelevant.
+    The rating updates QUALITY_SCORE in the database, improving future retrieval ranking.
+
+    Args:
+        pain_point_id: The ID of the historical pain point case (from similar_cases results).
+                       If not available, pass the exact similar_pain_point text and the system
+                       will look it up.
+        rating:        "useful" — the case was relevant and helped the recommendation.
+                       "not_useful" — the case was irrelevant or misleading.
+        consultant_id: Optional identifier of the consultant providing feedback.
+
+    Returns:
+        Confirmation message with updated quality score.
+    """
+    if rating not in ("useful", "not_useful"):
+        return json.dumps({"error": f"Invalid rating '{rating}'. Use 'useful' or 'not_useful'."})
+
+    log.info(">> rate_recommendation | id=%s | rating=%s | consultant=%s", pain_point_id, rating, consultant_id)
+
+    conn = hana_connection()
+    cursor = conn.cursor()
+    try:
+        # Check if pain_point_id is a UUID (32 hex chars or 36 with dashes) or text lookup
+        import re
+        is_uuid = bool(re.fullmatch(r'[0-9a-fA-F]{32}', pain_point_id) or
+                       re.fullmatch(r'[0-9a-fA-F-]{36}', pain_point_id))
+
+        if is_uuid:
+            cursor.execute(
+                "SELECT ID, USE_COUNT, QUALITY_SCORE FROM SVA2.PAIN_POINTS WHERE ID = ?",
+                [pain_point_id],
+            )
+        else:
+            # Fallback: look up by exact pain_point text match
+            cursor.execute(
+                "SELECT TOP 1 ID, USE_COUNT, QUALITY_SCORE FROM SVA2.PAIN_POINTS WHERE PAIN_POINT = ?",
+                [pain_point_id],
+            )
+
+        row = cursor.fetchone()
+        if not row:
+            return json.dumps({"error": f"Pain point not found: '{pain_point_id[:50]}...'"})
+
+        case_id, use_count, current_score = row
+        use_count = use_count or 0
+        current_score = float(current_score or 0)
+
+        # Update quality score using exponential moving average
+        # New score = old_score * decay + new_signal * (1 - decay)
+        # useful = 1.0, not_useful = 0.0
+        _DECAY = 0.8
+        signal = 1.0 if rating == "useful" else 0.0
+
+        if current_score == 0 and use_count <= 1:
+            # First rating — set directly
+            new_score = signal
+        else:
+            new_score = current_score * _DECAY + signal * (1 - _DECAY)
+
+        # Clamp to [0, 1]
+        new_score = max(0.0, min(1.0, new_score))
+
+        # Update the record
+        update_fields = ["QUALITY_SCORE = ?"]
+        update_params = [new_score]
+
+        if consultant_id:
+            update_fields.append("APPROVED_BY = ?")
+            update_params.append(consultant_id)
+            update_fields.append("APPROVED_AT = CURRENT_TIMESTAMP")
+
+        update_params.append(case_id)
+        cursor.execute(
+            f"UPDATE SVA2.PAIN_POINTS SET {', '.join(update_fields)} WHERE ID = ?",
+            update_params,
+        )
+        conn.commit()
+
+        log.info("   Updated case %s: quality_score %.2f → %.2f (rating=%s)",
+                 case_id, current_score, new_score, rating)
+
+        return json.dumps({
+            "success": True,
+            "case_id": case_id,
+            "previous_score": round(current_score, 3),
+            "new_score": round(new_score, 3),
+            "rating": rating,
+            "message": f"Quality score updated: {current_score:.3f} → {new_score:.3f}",
+        })
+    except Exception as e:
+        log.error("rate_recommendation failed: %s", e, exc_info=True)
+        return json.dumps({"error": str(e)})
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 if __name__ == "__main__":
