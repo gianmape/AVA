@@ -90,7 +90,7 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
      - 0.55–0.64: Weak match — treat as background context only, do NOT anchor on it.
    Cases below 0.55 are already filtered out by the server and will not appear.
 
-2.5 For EACH row individually, in sequence:
+2.5 For EACH row individually, in sequence — complete ALL four steps before moving to the next row:
    a) Draft a 1–2 sentence English summary of the recommendation you plan to give for this row.
       This becomes the recommendation_hint for step b.
    b) Call retrieve_knowledge_context with:
@@ -101,19 +101,24 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
         primary query for documentation search, which is more accurate than keyword extraction
         from a raw Spanish pain point). Example: "Migrate classic sourcing templates to native
         guided sourcing project templates and reconfigure review tasks."
-   c) Perform 1 web search to find a specific SAP documentation article for this row's pain point.
+   c) MANDATORY — you MUST call web_search for this row before synthesizing it or moving to the next row.
+      This step is NOT optional. Do NOT batch or defer web searches to after all retrieve_knowledge_context calls.
       Search query: "SAP Ariba [solution] [topic] site:help.sap.com OR site:community.sap.com"
       ONLY use: help.sap.com, community.sap.com, SAP release notes.
       Do NOT use learning.sap.com — the ENTIRE domain is blocked, every URL on it is unreliable.
-      Hard cap: MAX 15 searches per batch run. If cap is reached, set documentation=[] for remaining rows.
+      Hard cap: MAX 15 searches per batch run. If the cap is reached, set documentation=[] for that row
+      and all remaining rows — do NOT reuse URLs from other rows as a substitute.
       A qualifying URL must come from the actual search result (never constructed or guessed) and have
       at least 4 path segments after the domain. If no qualifying URL found → documentation=[].
+      UNIQUENESS RULE: each row's Documentation must be unique. If the search returns URLs already used
+      in a previous row, run a second search with a more specific query before accepting the duplicate.
+      If still no unique URL is found → documentation=[]. Never assign the same URL to two different rows.
    d) Synthesize the full output for this row using your SAP knowledge, the tool result, and the search result.
       Use the "documentation" field from the retrieve_knowledge_context response as a starting point;
       complement or replace with the web_search result if it is more specific.
       LANGUAGE RULE: each row includes a `language` field ("es", "en", "pt"). Write ALL generated text
       for that row in that language. "es"=Spanish · "en"=English · "pt"=Portuguese. Never override with English.
-   Repeat a–d for every row before calling write_excel_output.
+   Complete steps a–d fully for row N before starting row N+1. Do NOT parallelize steps b and c across rows.
 
    DO NOT call retrieve_knowledge_context_batch — use retrieve_knowledge_context once per row as described above.
 
