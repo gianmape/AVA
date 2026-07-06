@@ -68,14 +68,16 @@ STRICT TOOL POLICY — only the following tools may be used. No other tools, com
 Do NOT execute terminal commands, read local files directly, run Python scripts, or use any tool not listed above.
 Do NOT read JSON files from Joule Desktop temp directories or any other location.
 
-1. Call read_excel_painpoints with the path of the attached file and NO offset/limit first.
-   This returns ALL rows and the total count. Do NOT read the file yourself.
-   If total_rows > 10, you MUST process in batches of 10:
-     - Batch 1: call read_excel_painpoints with offset=0, limit=10
+1. Call read_excel_painpoints with the path of the attached file and limit=1 first (offset=0, limit=1).
+   This returns total_rows without loading all data. Do NOT read the file yourself.
+   MANDATORY BATCHING — no exceptions:
+     - ALWAYS use limit=10, regardless of total_rows.
+     - Batch 1: call read_excel_painpoints with offset=0,  limit=10
      - Batch 2: call read_excel_painpoints with offset=10, limit=10
-     - Continue until offset >= total_rows
+     - Batch 3: call read_excel_painpoints with offset=20, limit=10
+     - Continue until offset >= total_rows.
    Process each batch fully (steps 2 through 4) before starting the next batch.
-   If total_rows <= 10, process all rows in a single pass.
+   NEVER load more than 10 rows at a time — even if total_rows <= 10, use offset=0, limit=10.
 
 2. For the current batch, call retrieve_similar_cases_batch ONCE with ALL rows in the batch.
    Pass the full batch list — do NOT call it once per row.
@@ -126,13 +128,13 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
    CRITICAL: write_excel_output overwrites the output file completely each time it is called.
    If you call it more than once, only the last call's rows will appear in the final file.
 
-   MULTI-BATCH EXAMPLE: If the Excel has 25 rows processed in 3 batches (10 + 10 + 5):
-     - Batch 1: synthesize rows 0–9 → store in memory
-     - Batch 2: synthesize rows 10–19 → store in memory
-     - Batch 3: synthesize rows 20–24 → store in memory
-     - THEN: call write_excel_output ONCE with all 25 rows combined
+   MULTI-BATCH EXAMPLE: If the Excel has 21 rows processed in 3 batches (10 + 10 + 1):
+     - Batch 1: offset=0,  limit=10 → synthesize rows 0–9  → store in memory
+     - Batch 2: offset=10, limit=10 → synthesize rows 10–19 → store in memory
+     - Batch 3: offset=20, limit=10 → synthesize rows 20    → store in memory
+     - THEN: call write_excel_output ONCE with all 21 rows combined
 
-   Accumulate ALL synthesized rows (all 16, or however many the Excel contained) into a single
+   Accumulate ALL synthesized rows (however many the Excel contained) into a single
    list and pass them all in one call.
    - input_path: the same attachment path passed to read_excel_painpoints
    - rows: the complete list of ALL rows synthesized, each with its original idx value.
@@ -191,8 +193,8 @@ def read_excel_painpoints(
     """
     Read the attached Excel file and return pain point rows as JSON.
 
-    Call first with no offset/limit to get total_rows. If total_rows > 10,
-    process in batches: call again with offset=0 limit=10, then offset=10 limit=10, etc.
+    Call first with offset=0, limit=1 to get total_rows without loading all data.
+    Then ALWAYS process in batches of 10: offset=0 limit=10, offset=10 limit=10, etc.
 
     Returns a JSON object with:
       - total_rows (int): total number of rows in the file (always present)
