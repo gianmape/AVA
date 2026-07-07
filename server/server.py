@@ -120,6 +120,71 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
       complement or replace with the web_search result if it is more specific.
       LANGUAGE RULE: each row includes a `language` field ("es", "en", "pt"). Write ALL generated text
       for that row in that language. "es"=Spanish · "en"=English · "pt"=Portuguese. Never override with English.
+
+      RECOMMENDATIONS TEXT FORMATTING — MANDATORY rules for readable Excel output.
+        The Recommendations field is the longest text in the Excel. Without formatting it becomes
+        an unreadable wall of text. You MUST apply ALL of these formatting rules:
+
+        STRUCTURE (in this exact order):
+        a) INTRODUCTORY PARAGRAPH: 2–3 sentences framing the diagnosis and general direction.
+           This paragraph stands alone — followed by an empty line.
+        b) EMPTY LINE (literal newline character) separating intro from steps.
+        c) NUMBERED STEPS: each step formatted as:
+             "N) TÍTULO EN MAYÚSCULAS: texto explicativo del paso."
+           Where N is the step number (1, 2, 3...).
+        d) EMPTY LINE between every step — each step is its own visual block.
+
+        MANDATORY FORMAT RULES:
+        1. Step title (the text between "N)" and ":") MUST be ENTIRELY IN UPPERCASE.
+           ✓ CORRECT: "1) CAPACITAR AL EQUIPO INTERNO:"
+           ✗ WRONG:   "1. Capacitar al equipo interno sobre..."
+        2. Use "N)" format (number + closing parenthesis), NOT "N." (number + period).
+           ✓ CORRECT: "1) IDENTIFICAR..."  "2) VERIFICAR..."
+           ✗ WRONG:   "1. Identificar..."  "2. Verificar..."
+        3. Each step MUST be separated from the next by a blank line (two newlines).
+           The text in the Excel cell must contain literal newline characters between steps.
+           ✓ CORRECT: "1) TÍTULO: texto...\n\n2) TÍTULO: texto..."
+           ✗ WRONG:   "1) TÍTULO: texto...\n2) TÍTULO: texto..." (no blank line)
+           ✗ WRONG:   "1) Título: texto... 2) Título: texto..." (all in one line)
+        4. The introductory paragraph must NOT start with a number. It is plain prose.
+        5. Do NOT skip the introductory paragraph — jumping straight into "1)..." is not allowed.
+
+        FULL CORRECT EXAMPLE (how it must look in the Excel cell):
+        ───────────────────────────────────────────
+        La discrepancia entre la fecha de vencimiento del certificado en el reporte y el estado
+        real en el perfil del proveedor indica un problema de sincronización de datos. Pasos de
+        diagnóstico y resolución:
+
+        1) IDENTIFICAR LA FUENTE DEL REPORTE: Verificar si el reporte está extrayendo datos del
+        proyecto de calificación (respuesta al cuestionario) o del perfil del proveedor.
+
+        2) VERIFICAR VERSIONES ACTIVAS: Confirmar que el proveedor tiene un solo proyecto de
+        calificación activo con el certificado actualizado.
+
+        3) USAR EL REPORTE CORRECTO: El reporte de 'Respuestas a Cuestionario' estándar de SLP
+        debe reflejar la última versión respondida.
+
+        4) CERRAR PROYECTOS OBSOLETOS: Terminar o cancelar proyectos de calificación antiguos
+        que puedan estar interfiriendo con la reportería.
+
+        5) VALIDACIÓN: Seleccionar 5 proveedores con discrepancia y revisar manualmente para
+        confirmar el patrón.
+        ───────────────────────────────────────────
+
+        INCORRECT EXAMPLE (this is what we do NOT want — no blank lines, no uppercase, no intro):
+        ───────────────────────────────────────────
+        1. Capacitar al equipo interno sobre la diferencia entre cuestionario interno y externo
+        en SLP, con énfasis en cuándo NO se debe seleccionar el cuestionario externo. 2. Revisar
+        la configuración del template de registro y la lógica de selección del cuestionario
+        externo para prevenir selecciones incorrectas. 3. Establecer gobernanza: definir reglas
+        claras sobre cuándo aplica el cuestionario externo vs. interno.
+        ───────────────────────────────────────────
+
+      BENEFITS FORMATTING — same readability approach:
+        - If multiple benefits: use bullet points with blank lines between them:
+            "• Reducción del tiempo de ciclo de aprobación en un 40%.\n\n• Eliminación de bloqueos por cuestionarios mal asignados.\n\n• Mayor visibilidad del estado de onboarding."
+        - If a single narrative benefit: write as a clear paragraph (2–3 sentences).
+
    Complete steps a–d fully for row N before starting row N+1. Do NOT parallelize steps b and c across rows.
 
    DO NOT call retrieve_knowledge_context_batch — use retrieve_knowledge_context once per row as described above.
