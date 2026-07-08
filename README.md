@@ -7,26 +7,34 @@
 Turn years of SAP Solution Value Advisory knowledge into instant, evidence-backed recommendations.
 
 
-AVA (Autonomous Value Advisory) AVA elevates value advisory inside Joule Work Desktop. It contextualizes client pain points using SVA’s historical library of real Ariba cases, enriches with Next‑Gen Ariba roadmap features and VLM KPIs, and returns prioritized recommendations with effort, timeline, and quantified benefits. AVA helps SVA reduce prep time, increase proposal quality, and anchor narratives in measurable outcomes. Multilingual and SAP‑native, it fits directly into your day-to-day advisory work
+AVA (Autonomous Value Advisory) elevates value advisory inside Joule Work Desktop. It contextualizes client pain points using SVA’s historical library of real Ariba cases, enriches with Next‑Gen Ariba roadmap features and VLM KPIs, and returns prioritized recommendations with effort, timeline, and quantified benefits. AVA helps SVA reduce prep time, increase proposal quality, and anchor narratives in measurable outcomes. Multilingual and SAP‑native, it fits directly into your day-to-day advisory work.
 
 ## Why now
 - Joule Work Desktop brings an always‑on conversational assistant to the desktop — no browser, instant context switching.
 - The difference-maker is context. AVA operationalizes SVA’s expert knowledge and fuses it with Product’s roadmap and VLM metrics to deliver recommendations that are specific and defensible.
+
 ## The challenge for SVA
 - Great value narratives require speed, depth, and evidence. Generic AI misses context; scattered assets slow teams down; proposals often lack quantified outcomes.
+
 ## What AVA is
 - An MCP server on SAP BTP Cloud Foundry connecting Joule Desktop to two SAP HANA Cloud vector indexes:
     - A historical pain point library of real SAP Ariba cases (by solution and functional area).
     - An internal knowledge base with 83 Next‑Gen Ariba features and 86 VLM KPIs across 5 solutions (Buying, Sourcing, Contracts, SLP, Supplier Risk).
+
 ## How it works
-- Given a client pain points Excel or a single chat query, AVA runs semantic similarity search (cosine similarity in HANA Vector Engine), enriches with roadmap features and VLM KPIs, synthesizes prioritized recommendations with category, effort, timeline, and benefits, and outputs a ready‑to‑deliver Excel or an instant analysis card in chat.
+- Given a client pain point (chat query or Excel batch), AVA runs semantic similarity search (cosine similarity in HANA Vector Engine), enriches with roadmap features and VLM KPIs, synthesizes prioritized recommendations with category, effort, timeline, and benefits, and outputs a structured analysis card in chat or a ready‑to‑deliver Excel.
+
 ## Why it matters
 - Faster prep, higher consistency, and metric‑anchored proposals that increase credibility and win rates.
 - Structured feedback loop from the field — which pains occur most, where roadmap features map to pains, and where gaps remain.
+
 ## Status and roadmap
-- Limited pilot with selected employees; presented at SAP’s flagship event.
+- **Live on Cloud Foundry** — single-query mode via Joule Work Desktop.
+- **Batch mode ready** — Excel intake → enriched corporate-formatted output; waiting for JWD to support it.
 - Multilingual (English, Spanish, Portuguese, and any language Joule supports).
+- Limited pilot with selected employees; presented at SAP’s flagship event.
 - Next: expert‑in‑the‑loop learning and expansion to Fieldglass and additional solutions.
+
 ## Native SAP stack
 - Gemini Embedding via SAP AI Core, HANA Cloud Vector Engine as the store, Joule Desktop as the reasoning layer, MCP streamable‑HTTP as the protocol.
 
@@ -34,54 +42,79 @@ AVA (Autonomous Value Advisory) AVA elevates value advisory inside Joule Work De
 ## Architecture
 
 ```
-Joule Desktop
-     │  MCP (streamable-http)
+Joule Work Desktop
+     │  MCP (streamable-HTTP)
      ▼
-server/server.py          ← FastMCP server — tool definitions + Joule instructions
-     │
-     ├── server/recommend.py
-     │       ├── read_excel_painpoints()      — parse input Excel, detect sheet/header
-     │       ├── retrieve_similar_cases()     — single cosine search, SVA2.PAIN_POINTS
-     │       ├── retrieve_similar_cases_batch() — parallel cosine search, all rows
-     │       ├── retrieve_knowledge_context() — parallel cosine search, SVA2.KNOWLEDGE_BASE
-     │       └── write_excel_output()         — generate output xlsx (corporate format)
-     │
-     └── shared/config.py
-             ├── embed_text()       — Gemini Embedding via SAP AI Core gen-ai-hub-sdk
-             ├── hana_connection()  — hdbcli connection from .env
-             └── normalise_*()      — solution / solution_area taxonomy helpers
+┌─────────────────────────────────────────────────────────┐
+│  server/server.py       ← Local: batch + single query   │
+│  server/server_cf.py    ← Cloud Foundry: single query   │
+│         │                                               │
+│         ├── server/recommend.py  ← Core retrieval logic │
+│         │       ├── read_excel_painpoints()             │
+│         │       ├── retrieve_similar_cases()            │
+│         │       ├── retrieve_similar_cases_batch()      │
+│         │       ├── retrieve_knowledge_context()        │
+│         │       ├── search_documentation()             │
+│         │       ├── write_excel_output()               │
+│         │       └── rate_recommendation()              │
+│         │                                               │
+│         ├── shared/config.py     ← SDK, pool, taxonomy  │
+│         │       ├── embed_text()                       │
+│         │       ├── hana_connection()                  │
+│         │       └── normalise_*()                      │
+│         │                                               │
+│         └── shared/instructions.py ← Single-query card  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Pipeline (Excel batch mode)
+### Two server variants
+
+| Server | Mode | Tools | Use case |
+|--------|------|-------|----------|
+| `server.py` | HTTP + stdio | 7 (all) | Local dev, batch Excel, Claude Desktop |
+| `server_cf.py` | HTTP only | 5 (single-query subset) | Cloud Foundry production (no local filesystem) |
+
+### Pipeline — Single query (live on CF)
 
 ```
-1. read_excel_painpoints(input_path)
-        └─ detect sheet by name hint or column scan
-        └─ normalise columns, detect language per row
-        └─ return [{idx, pain_point, solution, solution_area, language}]
+1. Consultant describes a pain point in Joule chat
 
-2. retrieve_similar_cases_batch(items)
-        └─ ThreadPoolExecutor — one HANA query per row in parallel
-        └─ cosine_similarity(embedding, TO_REAL_VECTOR(?)) on SVA2.PAIN_POINTS
-        └─ filtered by SOLUTION (and optionally SOLUTION_AREA)
-        └─ increments USE_COUNT on every hit
+2. query_single_pain_point(pain_point, solution)
+        └─ embed → cosine search on SVA2.PAIN_POINTS
+        └─ filtered by SOLUTION, threshold ≥ 0.55
+        └─ quality-weighted scoring
 
 3. retrieve_knowledge_context(pain_point, solution, ["next_gen", "vlm_kpis"])
-        └─ ThreadPoolExecutor — one query per source_type in parallel
-        └─ cosine_similarity on SVA2.KNOWLEDGE_BASE, no solution filter
-        └─ top_k=5 per source_type
+        └─ parallel cosine search on SVA2.KNOWLEDGE_BASE
+        └─ next_gen: solution-filtered, fallback to global
+        └─ vlm_kpis: always solution-filtered
+        └─ includes server-side documentation search (SAP Help Portal)
+
+4. Joule synthesizes structured card:
+        🔍 Pain Point → 💡 Recommendation → 🎯 Benefits
+        📊 SVA Analysis → 📚 Documentation → 🚀 Next-Gen → 📋 KPIs
+```
+
+### Pipeline — Excel batch (ready, pending JWD support)
+
+```
+1. read_excel_painpoints(input_path, offset, limit=10)
+        └─ detect sheet, normalise columns, detect language per row
+
+2. retrieve_similar_cases_batch(items)
+        └─ ThreadPoolExecutor — parallel HANA vector search
+        └─ circuit breaker: aborts if >50% tasks fail
+
+3. retrieve_knowledge_context(pain_point, solution, sources, hint)
+        └─ called per row with Joule's drafted hint
 
 4. Joule synthesizes per row:
         Recommendations · Category · Effort · Timeline · Benefits
-        Documentation (quality-filtered SAP links)
-        Ariba Next-Gen (roadmap features)
-        Value KPIs (VLM KPI blocks with formula + frequency)
+        Documentation · Ariba Next-Gen · Value KPIs
 
 5. write_excel_output(input_path, rows)
-        └─ backfills pain_point/solution from source Excel if Joule omits them
-        └─ expands short labels ("High" → "High (1 – 2 Months)")
-        └─ strips blocked/generic documentation URLs
-        └─ generates fresh .xlsx with SAP corporate format (Quick Reference Card spec)
+        └─ expands short labels, strips blocked URLs
+        └─ SAP corporate format (Quick Reference Card spec)
         └─ saves to ~/Downloads/<stem>_RECOMMENDED.xlsx
 ```
 
@@ -148,14 +181,15 @@ Internal knowledge — two source types currently ingested.
 
 ## MCP Tools
 
-| Tool | Called by | Description |
+| Tool | Server | Description |
 |---|---|---|
-| `read_excel_painpoints` | Joule (step 1) | Parse input Excel — auto-detects sheet, header row, language |
-| `retrieve_similar_cases_batch` | Joule (step 2) | Parallel HANA vector search for all rows |
-| `retrieve_knowledge_context` | Joule (step 3) | Parallel knowledge base search per source_type |
-| `write_excel_output` | Joule (step 5) | Generate output xlsx with corporate format |
-| `query_single_pain_point` | Joule (single mode) | Single pain point query — retrieves similar cases |
-| `list_ingested_solutions` | Joule / debug | Show row counts per solution in PAIN_POINTS |
+| `query_single_pain_point` | both | Single pain point query — retrieves similar cases |
+| `retrieve_knowledge_context` | both | Parallel knowledge base search per source_type + documentation |
+| `list_ingested_solutions` | both | Show row counts per solution in PAIN_POINTS |
+| `rate_recommendation` | both | Quality feedback loop — updates QUALITY_SCORE |
+| `read_excel_painpoints` | local only | Parse input Excel — auto-detects sheet, header row, language |
+| `retrieve_similar_cases_batch` | local only | Parallel HANA vector search for all rows (circuit breaker) |
+| `write_excel_output` | local only | Generate output xlsx with corporate format |
 
 ---
 
@@ -207,25 +241,49 @@ Then run the ingestion command above.
 
 ---
 
+## Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Similarity threshold **0.55** | Filters noise; only meaningful matches reach Joule |
+| Quality weighting | Exponential moving average (decay=0.8) from consultant feedback |
+| Circuit breaker (batch) | Aborts remaining if >50% tasks fail — prevents cascading timeouts |
+| Solution-filtered retrieval | next_gen: tries filtered first, fallback global; vlm_kpis: always filtered |
+| Server-side documentation search | SAP Help Portal API; replaces unreliable LLM web search |
+| Blocked URL domains | learning.sap.com, support.ariba.com — known to return invalid links |
+| Language enforcement | All output in same language as the pain point (langdetect with deterministic seed) |
+| No Impact classification | Always "To be assessed" — consultant-only field |
+
+---
+
 ## Project Structure
 
 ```
 SVA2.0/
 ├── server/
-│   ├── server.py           ← FastMCP server, Joule instructions, tool definitions
+│   ├── server.py           ← FastMCP server (local: batch + single query)
+│   ├── server_cf.py        ← FastMCP server (CF: single query only)
 │   └── recommend.py        ← HANA retrieval, batch search, Excel reader/writer
 ├── shared/
-│   └── config.py           ← AI Core SDK init, HANA connection, taxonomy, embed_text()
+│   ├── config.py           ← AI Core SDK init, HANA pool, taxonomy, embed_text()
+│   └── instructions.py     ← Unified single-query mode instructions
 ├── ingestion/
-│   ├── ingest.py           ← ingest pain points into SVA2.PAIN_POINTS
-│   └── ingest_knowledge.py ← ingest knowledge files into SVA2.KNOWLEDGE_BASE
+│   ├── ingest.py           ← Ingest pain points into SVA2.PAIN_POINTS
+│   ├── ingest_knowledge.py ← Ingest knowledge files into SVA2.KNOWLEDGE_BASE
+│   └── ingest_qa_pdf.py    ← Extract Q&A pairs from PDF → KNOWLEDGE_BASE
 ├── schema/
 │   ├── hana_schema.sql     ← SVA2.PAIN_POINTS DDL
-│   └── knowledge_base.sql  ← SVA2.KNOWLEDGE_BASE DDL + ALTER history
+│   └── knowledge_base.sql  ← SVA2.KNOWLEDGE_BASE DDL
+├── tests/
+│   ├── test_circuit_breaker.py  ← Circuit breaker resilience tests
+│   └── test_output_format.py    ← Excel output formatting validation
+├── tools/
+│   └── telemetry.py        ← Log parser for similarity score analysis
 ├── data/
-│   └── legacy/             ← source Excel files for ingestion
+│   └── legacy/             ← Source Excel/PDF files for ingestion
+├── manifest.yml            ← Cloud Foundry deployment config
 ├── requirements.txt
-└── .env                    ← credentials (not committed)
+└── .env                    ← Credentials (not committed)
 ```
 
 ---
@@ -298,11 +356,46 @@ http://127.0.0.1:8000/mcp
 
 Logs are written to both stderr and `mcp_server.log` in the project root.
 
-### 6. Connect Joule Desktop
+### 6. Deploy to Cloud Foundry
+
+```bash
+cf push
+```
+
+Production endpoint (single-query mode only):
+```
+https://ava.cfapps.us30.hana.ondemand.com/mcp
+```
+
+### 7. Connect Joule Desktop
 
 Add the MCP server in Joule Desktop settings pointing to:
+- **Local:** `http://127.0.0.1:8000/mcp`
+- **CF:** `https://ava.cfapps.us30.hana.ondemand.com/mcp`
+
+---
+
+## Testing
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Individual suites
+python -m pytest tests/test_circuit_breaker.py -v   # Circuit breaker resilience
+python -m pytest tests/test_output_format.py -v     # Excel output formatting
 ```
-http://127.0.0.1:8000/mcp
+
+---
+
+## Telemetry
+
+Parse `mcp_server.log` for similarity scores, batch metrics, and circuit breaker events:
+
+```bash
+python tools/telemetry.py                  # Default log file
+python tools/telemetry.py --json           # JSON output
+python tools/telemetry.py path/to/log.log  # Custom path
 ```
 
 ---
@@ -314,4 +407,23 @@ http://127.0.0.1:8000/mcp
 | SAP AI Core | standard | Gemini Embedding deployment |
 | SAP HANA Cloud | hana | Vector store (PAIN_POINTS + KNOWLEDGE_BASE) |
 | SAP HANA Cloud | tools | HANA Cloud Central UI + SQL console |
-| Joule Work Desktop | — | LLM reasoning + SAP documentation access |
+| Joule Work Desktop | — | LLM reasoning + user-facing chat interface |
+
+---
+
+## Cloud Foundry Deployment
+
+```yaml
+# manifest.yml
+applications:
+  - name: ava
+    command: python server/server_cf.py --http --port $PORT
+    buildpacks: [python_buildpack]
+    memory: 512M
+    disk_quota: 1G
+    instances: 1
+    routes:
+      - route: ava.cfapps.us30.hana.ondemand.com
+```
+
+Secrets are set via `cf set-env ava <KEY> <VALUE>` (never committed).
