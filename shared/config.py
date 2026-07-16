@@ -177,17 +177,29 @@ def _init_embedding():
 # ---------------------------------------------------------------------------
 # Embeddings
 # ---------------------------------------------------------------------------
+_EMBED_CACHE: dict[str, list[float]] = {}
+_EMBED_CACHE_MAX = 256
+
+
 def embed_text(text: str) -> list[float]:
     """
     Generate an embedding vector via Gemini Embedding deployed on SAP AI Core.
+
+    Results are cached in-memory (LRU, max 256 entries) keyed by normalized text
+    to avoid redundant API calls for the same pain point across retrieval stages.
 
     Gemini Embedding uses the Vertex AI predict format:
       POST .../models/gemini-embedding:predict
       body: {"instances": [{"content": "<text>"}]}
 
-    Retries up to 3 times with exponential backoff on 429 (rate limit) errors,
-    which can occur when multiple parallel calls hit the endpoint simultaneously.
+    Retries up to 3 times with exponential backoff on 429/5xx errors.
     """
+    # Normalize whitespace for cache key consistency
+    cache_key = " ".join(text.split())
+    if cache_key in _EMBED_CACHE:
+        _log.info("   embed_text: cache HIT (%d chars)", len(cache_key))
+        return _EMBED_CACHE[cache_key]
+
     _init_embedding()
     headers = {**dict(_embedding_client.request_header), "Content-Type": "application/json"}
     body = {"instances": [{"content": text}]}
@@ -196,19 +208,24 @@ def embed_text(text: str) -> list[float]:
     for attempt in range(3):
         if attempt > 0:
             delay = 2 ** attempt  # 2s, 4s
-            _log.warning("   embed_text: 429 rate limit — retry %d/3 in %ds", attempt + 1, delay)
+            _log.warning("   embed_text: retryable error — retry %d/3 in %ds", attempt + 1, delay)
             _time.sleep(delay)
         _log.info("   embed_text: POST %s", _embedding_url)
         response = _requests.post(_embedding_url, headers=headers, json=body, timeout=30)
-        if response.status_code == 429:
+        if response.status_code in (429, 500, 502, 503):
             last_exc = response
             continue
         response.raise_for_status()
         values = response.json()["predictions"][0]["embeddings"]["values"]
         _log.info("   embed_text: OK (%d dims)", len(values))
+
+        # Cache the result (evict oldest if full)
+        if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+            _EMBED_CACHE.pop(next(iter(_EMBED_CACHE)))
+        _EMBED_CACHE[cache_key] = values
         return values
 
-    # All retries exhausted — raise the last 429 response as an HTTPError
+    # All retries exhausted — raise the last error response as an HTTPError
     last_exc.raise_for_status()
 
 
@@ -276,7 +293,10 @@ def hana_connection() -> "dbapi.Connection":
     """
     _init_pool()
     assert _pool is not None
-    conn = _pool.get()
+    try:
+        conn = _pool.get(timeout=30)
+    except _queue.Empty:
+        raise TimeoutError("HANA connection pool exhausted — no connection available within 30s")
     # Validate — replace silently if the connection was dropped
     try:
         conn.isconnected()

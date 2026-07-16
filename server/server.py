@@ -555,7 +555,8 @@ def retrieve_knowledge_context(
 
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | hint=%.60s | pain_point=%.80s…",
              solution, source_types, recommendation_hint, pain_point)
-    results = _retrieve_knowledge(pain_point, solution, source_types, top_k=5)
+    results = _retrieve_knowledge(pain_point, solution, source_types, top_k=5,
+                                    recommendation_hint=recommendation_hint)
     total = sum(len(v) for v in results.values())
     log.info("   Returned %d entries across %d source(s)", total, len(source_types))
 

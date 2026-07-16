@@ -62,11 +62,11 @@ ORDER BY SCORE DESC
 """
 
 # Minimum cosine similarity threshold — cases below this are considered irrelevant
-_SIMILARITY_THRESHOLD = 0.55
+_SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.55"))
 
 # Quality weighting: final_score = cosine_score + (quality_bonus * _QUALITY_WEIGHT)
-# quality_bonus = quality_score if available, else log2(use_count+1)/10 as usage signal
-_QUALITY_WEIGHT = 0.05
+# quality_bonus = quality_score if > 0 (from consultant feedback), else 0 (no proxy)
+_QUALITY_WEIGHT = 0.15
 
 KNOWLEDGE_SEARCH_SQL = """
 SELECT TOP {top_k}
@@ -707,12 +707,10 @@ def retrieve_similar_cases(
 
         # Compute weighted score: cosine + quality bonus
         # quality_score (0-1) takes priority if set; otherwise use log2(use_count) as proxy
-        import math
         for r in raw:
             cosine = r.get("score") or 0
             qs = r.get("quality_score") or 0
-            uc = r.get("use_count") or 0
-            quality_bonus = qs if qs > 0 else (math.log2(uc + 1) / 10.0)
+            quality_bonus = qs if qs > 0 else 0.0
             r["weighted_score"] = cosine + (quality_bonus * _QUALITY_WEIGHT)
 
         # Re-sort by weighted score (may reorder when cosine scores are close)
@@ -1212,6 +1210,7 @@ def retrieve_knowledge_context(
     solution: str,
     source_types: list[str],
     top_k: int = 3,
+    recommendation_hint: str = "",
 ) -> dict:
     """
     Search SVA2.KNOWLEDGE_BASE for each source_type in parallel.
@@ -1224,13 +1223,33 @@ def retrieve_knowledge_context(
     import logging
     log = logging.getLogger("sva2")
 
+    # Build embedding query matching KB ingestion format (title — content)
+    # When recommendation_hint is available, use it as enriched query for better semantic alignment
+    embed_query = f"{pain_point} — {recommendation_hint}" if recommendation_hint else pain_point
+
     try:
-        query_vector = embed_text(pain_point)
+        query_vector = embed_text(embed_query)
     except Exception as e:
         log.error("   retrieve_knowledge_context: embed_text failed: %s", e, exc_info=True)
         return {st: [] for st in source_types}
 
     vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
+
+    # Release relevance bonus: features in current/next quarter get a small score boost
+    from datetime import date as _date
+    _today = _date.today()
+    _current_q = f"Q{(_today.month - 1) // 3 + 1}"
+    _current_year = str(_today.year)
+    _RELEASE_BONUS = 0.03
+
+    def _release_bonus(release: str | None) -> float:
+        """Return bonus for features releasing in the current quarter."""
+        if not release:
+            return 0.0
+        r = release.upper()
+        if _current_q in r and _current_year in r:
+            return _RELEASE_BONUS
+        return 0.0
 
     def _search_one(source_type: str) -> tuple[str, list[dict]]:
         cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
@@ -1238,7 +1257,8 @@ def retrieve_knowledge_context(
                 "capability", "kpi_formula", "kpi_meas_freq", "score"]
 
         # For vlm_kpis, filter by solution strictly (no fallback).
-        # For next_gen/workshop, run DUAL queries: filtered + global, merge by score.
+        # For next_gen, run DUAL queries: filtered + global, merge by score.
+        # For workshop, always global (85% of rows have SOLUTION=NULL).
         try:
             conn   = hana_connection()
             cursor = conn.cursor()
@@ -1250,40 +1270,17 @@ def retrieve_knowledge_context(
                     )
                     rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-                elif source_type in ("next_gen", "workshop") and solution:
-                    # Dual-query merge: solution-filtered + global, keep top_k by score
-                    # Query 1: filtered by solution
+                elif source_type == "next_gen" and solution:
+                    # Single query: get both solution-specific AND cross-cutting (NULL) entries
+                    # ranked by cosine similarity. Avoids 2 round-trips.
                     cursor.execute(
-                        KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter="AND SOLUTION = ?"),
+                        KNOWLEDGE_SEARCH_SQL.format(
+                            top_k=top_k,
+                            solution_filter="AND (SOLUTION = ? OR SOLUTION IS NULL)",
+                        ),
                         [vector_str, source_type, solution],
                     )
-                    filtered_rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-                    # Query 2: global (includes SOLUTION IS NULL cross-cutting content)
-                    cursor2 = conn.cursor()
-                    try:
-                        cursor2.execute(
-                            KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=""),
-                            [vector_str, source_type],
-                        )
-                        global_rows = [dict(zip(cols, row)) for row in cursor2.fetchall()]
-                    finally:
-                        cursor2.close()
-
-                    # Merge: deduplicate by title, keep highest score
-                    seen_titles: set[str] = set()
-                    merged = []
-                    for row in sorted(filtered_rows + global_rows,
-                                      key=lambda r: r.get("score", 0), reverse=True):
-                        title_key = (row.get("title") or "").strip().lower()
-                        if title_key and title_key in seen_titles:
-                            continue
-                        if title_key:
-                            seen_titles.add(title_key)
-                        merged.append(row)
-                        if len(merged) >= top_k:
-                            break
-                    rows = merged
+                    rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
                 else:
                     # No solution or unknown source_type — global search
@@ -1295,6 +1292,12 @@ def retrieve_knowledge_context(
             finally:
                 cursor.close()
                 release_connection(conn)
+
+            # Apply release relevance bonus for next_gen entries (current quarter features rank higher)
+            if source_type == "next_gen":
+                for row in rows:
+                    row["score"] = (row.get("score") or 0) + _release_bonus(row.get("release"))
+                rows.sort(key=lambda r: r.get("score", 0), reverse=True)
 
             # Remove score from final output — internal ranking only
             for row in rows:
