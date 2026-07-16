@@ -543,11 +543,15 @@ def retrieve_knowledge_context(
         - "documentation": list of {"title": ..., "url": ...} — pre-validated SAP Help Portal links.
     """
     if source_types is None:
-        source_types = ["next_gen"]
+        source_types = ["next_gen", "workshop"]
 
     # Always include vlm_kpis for solutions that have KPI data — do not rely on Joule passing it.
     if solution in _VLM_SOLUTIONS and "vlm_kpis" not in source_types:
         source_types = list(source_types) + ["vlm_kpis"]
+
+    # Always include workshop for implementation context.
+    if "workshop" not in source_types:
+        source_types = list(source_types) + ["workshop"]
 
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | hint=%.60s | pain_point=%.80s…",
              solution, source_types, recommendation_hint, pain_point)

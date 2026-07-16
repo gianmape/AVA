@@ -181,10 +181,13 @@ def retrieve_knowledge_context(
         Empty list means no relevant entries found — use the "no coverage" message.
     """
     if source_types is None:
-        source_types = ["next_gen"]
+        source_types = ["next_gen", "workshop"]
 
     if solution in _VLM_SOLUTIONS and "vlm_kpis" not in source_types:
         source_types = list(source_types) + ["vlm_kpis"]
+
+    if "workshop" not in source_types:
+        source_types = list(source_types) + ["workshop"]
 
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | hint=%.60s | pain_point=%.80s…",
              solution, source_types, recommendation_hint, pain_point)

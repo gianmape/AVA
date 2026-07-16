@@ -72,11 +72,12 @@ KNOWLEDGE_SEARCH_SQL = """
 SELECT TOP {top_k}
     TITLE, CONTENT, SOLUTION, RELEASE, AGENT_BASED, JOULE_BASED,
     VALUE_DRIVER, VALUE_LEVER, KPI_ID, KPI_CATEGORY, KPI_TARGET,
-    CAPABILITY, KPI_FORMULA, KPI_MEAS_FREQ
+    CAPABILITY, KPI_FORMULA, KPI_MEAS_FREQ,
+    COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) AS SCORE
 FROM SVA2.KNOWLEDGE_BASE
 WHERE SOURCE_TYPE = ?
 {solution_filter}
-ORDER BY COSINE_SIMILARITY(EMBEDDING, TO_REAL_VECTOR(?)) DESC
+ORDER BY SCORE DESC
 """
 
 TARGET_COLS = {
@@ -1232,48 +1233,73 @@ def retrieve_knowledge_context(
     vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
 
     def _search_one(source_type: str) -> tuple[str, list[dict]]:
-        # For vlm_kpis, filter by solution so KPIs from other solutions don't
-        # crowd out the top_k results (e.g. SLP's 16 rows vs Buying's 29 rows).
-        # For next_gen, try solution-filtered first; if empty, fallback to global.
-        if source_type == "vlm_kpis" and solution:
-            solution_filter = "AND SOLUTION = ?"
-            positional = [source_type, solution, vector_str]
-        elif source_type == "next_gen" and solution:
-            # Try filtered first — more relevant results for the specific solution
-            solution_filter = "AND SOLUTION = ?"
-            positional = [source_type, solution, vector_str]
-        else:
-            solution_filter = ""
-            positional = [source_type, vector_str]
+        cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
+                "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
+                "capability", "kpi_formula", "kpi_meas_freq", "score"]
 
+        # For vlm_kpis, filter by solution strictly (no fallback).
+        # For next_gen/workshop, run DUAL queries: filtered + global, merge by score.
         try:
             conn   = hana_connection()
             cursor = conn.cursor()
             try:
-                cursor.execute(
-                    KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=solution_filter),
-                    positional,
-                )
-                cols = ["title", "content", "solution", "release", "agent_based", "joule_based",
-                        "value_driver", "value_lever", "kpi_id", "kpi_category", "kpi_target",
-                        "capability", "kpi_formula", "kpi_meas_freq"]
-                rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+                if source_type == "vlm_kpis" and solution:
+                    cursor.execute(
+                        KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter="AND SOLUTION = ?"),
+                        [vector_str, source_type, solution],
+                    )
+                    rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-                # Fallback: if next_gen filtered by solution returned empty, retry global
-                if source_type == "next_gen" and not rows and solution_filter:
-                    log.info("   next_gen: no results for solution '%s', falling back to global", solution)
+                elif source_type in ("next_gen", "workshop") and solution:
+                    # Dual-query merge: solution-filtered + global, keep top_k by score
+                    # Query 1: filtered by solution
+                    cursor.execute(
+                        KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter="AND SOLUTION = ?"),
+                        [vector_str, source_type, solution],
+                    )
+                    filtered_rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+                    # Query 2: global (includes SOLUTION IS NULL cross-cutting content)
                     cursor2 = conn.cursor()
                     try:
                         cursor2.execute(
                             KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=""),
-                            [source_type, vector_str],
+                            [vector_str, source_type],
                         )
-                        rows = [dict(zip(cols, row)) for row in cursor2.fetchall()]
+                        global_rows = [dict(zip(cols, row)) for row in cursor2.fetchall()]
                     finally:
                         cursor2.close()
+
+                    # Merge: deduplicate by title, keep highest score
+                    seen_titles: set[str] = set()
+                    merged = []
+                    for row in sorted(filtered_rows + global_rows,
+                                      key=lambda r: r.get("score", 0), reverse=True):
+                        title_key = (row.get("title") or "").strip().lower()
+                        if title_key and title_key in seen_titles:
+                            continue
+                        if title_key:
+                            seen_titles.add(title_key)
+                        merged.append(row)
+                        if len(merged) >= top_k:
+                            break
+                    rows = merged
+
+                else:
+                    # No solution or unknown source_type — global search
+                    cursor.execute(
+                        KNOWLEDGE_SEARCH_SQL.format(top_k=top_k, solution_filter=""),
+                        [vector_str, source_type],
+                    )
+                    rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
             finally:
                 cursor.close()
                 release_connection(conn)
+
+            # Remove score from final output — internal ranking only
+            for row in rows:
+                row.pop("score", None)
+
             return source_type, rows
         except Exception as e:
             log.error("   _search_one[%s] failed: %s", source_type, e, exc_info=True)
