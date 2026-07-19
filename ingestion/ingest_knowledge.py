@@ -103,6 +103,16 @@ VLM_SHEET_SOLUTION_MAP = {
     "ariba contracts":          "Ariba Contracts",
     "ariba slp":                "Ariba SLP",
     "ariba risk":               "Ariba Supplier Risk",
+    # Additional modules
+    "ariba catalog":            "Ariba Catalog",
+    "ariba guided buying":      "Ariba Guided Buying",
+    "ariba invoice":            "Ariba Invoice",
+    "ariba reporting":          "Ariba Reporting",
+    "ariba sipm":               "Ariba SIPM",
+    "ariba supplier risk":      "Ariba Supplier Risk",
+    "business network":         "Business Network",
+    "commerce automation":      "Commerce Automation",
+    "spend analysis":           "Spend Analysis",
 }
 
 

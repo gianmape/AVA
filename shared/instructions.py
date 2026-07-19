@@ -201,7 +201,7 @@ CRITICAL: Do NOT embed documentation links or references inline within the recom
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 \U0001f4d0 **VALUE KPIs**
 [Rules for this section:
- 1. Only populate when validated_solution is one of: Ariba Sourcing, Ariba Buying, Ariba Contracts, Ariba SLP, Ariba Supplier Risk \u2014 for other solutions write: "No KPI data available for this solution."
+ 1. KPI data is available for ALL 13 solutions. If vlm_kpis results are empty, write: "No Value KPIs identified for this pain point."
  2. Read KPIs from result["results"]["vlm_kpis"]. If the list is empty, write: "No Value KPIs identified for this pain point."
  3. If vlm_kpis results are present, ALWAYS list them \u2014 do NOT filter by relevance. List up to 3, ordered by closest match to the pain point context. Use EXACTLY this format (use literal newlines):
 

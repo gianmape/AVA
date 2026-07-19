@@ -500,6 +500,8 @@ def query_single_pain_point(pain_point: str, solution: str) -> str:
 
 _VLM_SOLUTIONS = {
     "Ariba Sourcing", "Ariba Buying", "Ariba Contracts", "Ariba SLP", "Ariba Supplier Risk",
+    "Ariba Catalog", "Ariba Guided Buying", "Ariba Invoice", "Ariba Reporting",
+    "Ariba SIPM", "Business Network", "Commerce Automation", "Spend Analysis",
 }
 
 

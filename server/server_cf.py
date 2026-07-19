@@ -70,6 +70,8 @@ log.info("=== AVA MCP server (CF / single query) starting ===")
 
 _VLM_SOLUTIONS = {
     "Ariba Sourcing", "Ariba Buying", "Ariba Contracts", "Ariba SLP", "Ariba Supplier Risk",
+    "Ariba Catalog", "Ariba Guided Buying", "Ariba Invoice", "Ariba Reporting",
+    "Ariba SIPM", "Business Network", "Commerce Automation", "Spend Analysis",
 }
 
 
