@@ -1,0 +1,33 @@
+# Environment — never commit credentials
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# Logs
+mcp_server.log
+*.log
+
+# Build / dist
+*.egg-info/
+dist/
+build/
+
+# Proprietary data — internal SAP content
+data/legacy/
+data/NG Workshop/
+
+# Internal documentation
+CONTEXT.md
+IDEAS.md
+PENDING.md

@@ -1,0 +1,18 @@
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.env
+.DS_Store
+.idea
+data/legacy
+data/new
+data/NG Workshop
+mcp_server.log
+1.png
+2.png
+ingestion/README.md
+CONTEXT.md
+IDEAS.md
+PENDING.md

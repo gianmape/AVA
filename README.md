@@ -364,14 +364,14 @@ cf push
 
 Production endpoint (single-query mode only):
 ```
-https://ava.cfapps.us30.hana.ondemand.com/mcp
+https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp
 ```
 
 ### 7. Connect Joule Desktop
 
 Add the MCP server in Joule Desktop settings pointing to:
 - **Local:** `http://127.0.0.1:8000/mcp`
-- **CF:** `https://ava.cfapps.us30.hana.ondemand.com/mcp`
+- **CF:** `https://<your-app>.cfapps.<region>.hana.ondemand.com/mcp`
 
 ---
 
@@ -423,7 +423,7 @@ applications:
     disk_quota: 1G
     instances: 1
     routes:
-      - route: ava.cfapps.us30.hana.ondemand.com
+      - route: <your-app>.cfapps.<region>.hana.ondemand.com
 ```
 
 Secrets are set via `cf set-env ava <KEY> <VALUE>` (never committed).
