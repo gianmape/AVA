@@ -52,7 +52,7 @@ mcp = FastMCP(
     "ava",
     stateless_http=True,
     instructions=f"""
-When a user says "Run SVA Analysis" or attaches a pain points Excel file:
+When the user attaches a pain points Excel file or asks to analyze pain points:
 
 STRICT TOOL POLICY — only the following tools may be used. No other tools, commands, or actions are permitted:
   MCP tools:
@@ -68,7 +68,13 @@ STRICT TOOL POLICY — only the following tools may be used. No other tools, com
 Do NOT execute terminal commands, read local files directly, run Python scripts, or use any tool not listed above.
 Do NOT read JSON files from Joule Desktop temp directories or any other location.
 
-1. Call read_excel_painpoints with the path of the attached file and limit=1 first (offset=0, limit=1).
+FILE DISCOVERY — determining which file to analyze:
+   - If the user message includes a file path or attachment → use that path.
+   - If NO path is provided: use the most recently modified .xlsx file in the working directory.
+     EXCLUDE files starting with "~$" (Office lock files) and files containing "RECOMMENDED" (output files).
+     Do NOT search subdirectories or guess filenames — use what is directly in the CWD.
+
+1. Call read_excel_painpoints with the resolved file path and limit=1 first (offset=0, limit=1).
    This returns total_rows without loading all data. Do NOT read the file yourself.
    MANDATORY BATCHING — no exceptions:
      - ALWAYS use limit=10, regardless of total_rows.
@@ -218,7 +224,7 @@ Do NOT read JSON files from Joule Desktop temp directories or any other location
 
    Format the dashboard exactly like this:
 
-   **SVA Analysis Complete — [N] pain points**
+   **Analysis Complete — [N] pain points**
 
    **Solutions**
    [solution name]  ●●●  3 (25%)
