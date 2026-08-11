@@ -18,6 +18,8 @@ import json
 import logging
 import pathlib
 import sys
+import time as _time
+from contextvars import ContextVar
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -48,6 +50,7 @@ from server.recommend import (
     search_documentation as _search_docs,
 )
 from shared.config import hana_connection, normalise_solution, release_connection
+from shared.usage import log_usage, query_metrics
 
 mcp = FastMCP(
     "ava",
@@ -59,6 +62,7 @@ TOOL POLICY — STRICT. Violation = wrong behavior.
     - retrieve_knowledge_context
     - list_ingested_solutions
     - rate_recommendation
+    - get_adoption_metrics
   Built-in tools (Joule Desktop):
     - web_search (optional fallback — documentation is provided server-side via retrieve_knowledge_context)
   FORBIDDEN: terminal commands, Python scripts, local file reads, any code execution, any tool not listed above.
@@ -67,6 +71,10 @@ TOOL POLICY — STRICT. Violation = wrong behavior.
 """,
 )
 log.info("=== AVA MCP server (CF / single query) starting ===")
+
+# Context variable to propagate client IP from HTTP middleware to tool handlers.
+# Populated by CallerMiddleware from x-forwarded-for or request.client.host.
+_current_ip: ContextVar[str | None] = ContextVar("_current_ip", default=None)
 
 _VLM_SOLUTIONS = {
     "Ariba Sourcing", "Ariba Buying", "Ariba Contracts", "Ariba SLP", "Ariba Supplier Risk",
@@ -131,16 +139,33 @@ def query_single_pain_point(pain_point: str, solution: str) -> str:
         similar_cases contains: similar_pain_point, solution_area, category, effort,
         timeline, impact — use these as directional hints, not as the final answer.
     """
+    t0 = _time.time()
     validated = normalise_solution(solution)
     if not validated:
         log.warning("   Unknown solution: %s", solution)
+        log_usage(tool_name="query_single_pain_point", solution=solution, success=False,
+                  client_ip=_current_ip.get(),
+                  response_time_ms=int((_time.time() - t0) * 1000))
         return json.dumps({
             "error": f"Unknown solution '{solution}'. Ask the user to choose from the valid list."
         })
 
     log.info(">> query_single_pain_point | solution=%s | pain_point=%.80s…", validated, pain_point)
     cases = _retrieve(pain_point, validated, area=None, top_k=3)
-    log.info("   Returned %d similar cases", len(cases))
+    elapsed_ms = int((_time.time() - t0) * 1000)
+    log.info("   Returned %d similar cases (%d ms)", len(cases), elapsed_ms)
+
+    top_sim = cases[0].get("similarity_score", 0) if cases else None
+    log_usage(
+        tool_name="query_single_pain_point",
+        client_ip=_current_ip.get(),
+        solution=validated,
+        pain_point_summary=pain_point[:200],
+        results_count=len(cases),
+        top_similarity=top_sim,
+        response_time_ms=elapsed_ms,
+        success=len(cases) > 0,
+    )
 
     return json.dumps({
         "pain_point": pain_point,
@@ -191,12 +216,24 @@ def retrieve_knowledge_context(
     if "workshop" not in source_types:
         source_types = list(source_types) + ["workshop"]
 
+    t0 = _time.time()
     log.info(">> retrieve_knowledge_context | solution=%s | sources=%s | hint=%.60s | pain_point=%.80s…",
              solution, source_types, recommendation_hint, pain_point)
     results = _retrieve_knowledge(pain_point, solution, source_types, top_k=5,
                                     recommendation_hint=recommendation_hint)
     total = sum(len(v) for v in results.values())
-    log.info("   Returned %d entries across %d source(s)", total, len(source_types))
+    elapsed_ms = int((_time.time() - t0) * 1000)
+    log.info("   Returned %d entries across %d source(s) (%d ms)", total, len(source_types), elapsed_ms)
+
+    log_usage(
+        tool_name="retrieve_knowledge_context",
+        client_ip=_current_ip.get(),
+        solution=solution,
+        pain_point_summary=pain_point[:200],
+        results_count=total,
+        response_time_ms=elapsed_ms,
+        success=total > 0,
+    )
 
     # Strip 'content' from vlm_kpis entries only — they have structured fields sufficient
     # for synthesis. next_gen entries keep 'content' (the feature description text).
@@ -234,6 +271,7 @@ def list_ingested_solutions() -> str:
     List all SAP Ariba solutions and row counts currently indexed in HANA.
     Useful to understand what historical data is available before retrieval.
     """
+    t0 = _time.time()
     log.info(">> list_ingested_solutions called")
     conn = hana_connection()
     cursor = conn.cursor()
@@ -247,6 +285,10 @@ def list_ingested_solutions() -> str:
     finally:
         cursor.close()
         release_connection(conn)
+
+    elapsed_ms = int((_time.time() - t0) * 1000)
+    log_usage(tool_name="list_ingested_solutions", client_ip=_current_ip.get(),
+              results_count=len(rows), response_time_ms=elapsed_ms, success=bool(rows))
 
     if not rows:
         return "No data ingested yet."
@@ -283,6 +325,7 @@ def rate_recommendation(
     if rating not in ("useful", "not_useful"):
         return json.dumps({"error": f"Invalid rating '{rating}'. Use 'useful' or 'not_useful'."})
 
+    t0 = _time.time()
     log.info(">> rate_recommendation | id=%s | rating=%s | consultant=%s", pain_point_id, rating, consultant_id)
 
     conn = hana_connection()
@@ -339,6 +382,9 @@ def rate_recommendation(
         log.info("   Updated case %s: quality_score %.2f → %.2f (rating=%s)",
                  case_id, current_score, new_score, rating)
 
+        log_usage(tool_name="rate_recommendation", client_ip=_current_ip.get(),
+                  response_time_ms=int((_time.time() - t0) * 1000), success=True)
+
         return json.dumps({
             "success": True,
             "case_id": case_id,
@@ -349,10 +395,43 @@ def rate_recommendation(
         })
     except Exception as e:
         log.error("rate_recommendation failed: %s", e, exc_info=True)
+        log_usage(tool_name="rate_recommendation", client_ip=_current_ip.get(),
+                  response_time_ms=int((_time.time() - t0) * 1000), success=False)
         return json.dumps({"error": str(e)})
     finally:
         cursor.close()
         release_connection(conn)
+
+
+@mcp.tool()
+def get_adoption_metrics(
+    period: str = "7d",
+    group_by: str = "summary",
+) -> str:
+    """
+    Retrieve AVA usage and adoption metrics from the USAGE_LOG table.
+
+    Use this tool to understand how AVA is being used across SAP consultants.
+    Returns structured JSON that can be interpreted and visualized.
+
+    Args:
+        period:   Time window — "7d" (last 7 days), "30d", "90d", or "all".
+        group_by: How to aggregate the data:
+                  "summary"  — overall KPIs: unique users, total queries, success rate, latency, top solutions.
+                  "user"     — breakdown per user: query count, last active date, active days.
+                  "solution" — breakdown per SAP solution: queries, unique users, similarity scores, empty rate.
+                  "tool"     — breakdown per MCP tool: queries, users, latency, success rate.
+                  "daily"    — time series: date, queries, unique users, avg latency.
+
+    Returns:
+        JSON with the requested metrics. Suitable for charts, tables, or natural language summaries.
+    """
+    log.info(">> get_adoption_metrics | period=%s | group_by=%s", period, group_by)
+    t0 = _time.time()
+    metrics = query_metrics(period=period, group_by=group_by)
+    elapsed_ms = int((_time.time() - t0) * 1000)
+    log.info("   Metrics retrieved in %d ms", elapsed_ms)
+    return json.dumps(metrics, ensure_ascii=False, default=str)
 
 
 def _build_http_app():
@@ -380,6 +459,13 @@ def _build_http_app():
                 for k, v in request.headers.items()
             )
             log.info("HEADERS [%s %s] %s", request.method, request.url.path, header_dump)
+
+            # Extract client IP (x-forwarded-for in CF, direct IP otherwise)
+            client_ip = (
+                request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                or (request.client.host if request.client else None)
+            )
+            _current_ip.set(client_ip)
 
             if guard_active:
                 actual = request.headers.get(expected_header, "")

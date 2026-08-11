@@ -8,7 +8,7 @@ applications:
     disk_quota: 1G
     instances: 1
     routes:
-      - route: <your-app>.cfapps.<region>.hana.ondemand.com
+      - route: ava.cfapps.us30.hana.ondemand.com
     env:
       AICORE_RESOURCE_GROUP: default
       EMBEDDING_MODEL_NAME: gemini-embedding
