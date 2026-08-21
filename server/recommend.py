@@ -1189,7 +1189,7 @@ def retrieve_knowledge_context_batch(
     import concurrent.futures
 
     if source_types is None:
-        source_types = ["next_gen", "vlm_kpis"]
+        source_types = ["next_gen", "current_gen", "vlm_kpis"]
 
     def _process_one(item):
         idx        = item["idx"]
@@ -1270,7 +1270,7 @@ def retrieve_knowledge_context(
                     )
                     rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-                elif source_type == "next_gen" and solution:
+                elif source_type in ("next_gen", "current_gen") and solution:
                     # Single query: get both solution-specific AND cross-cutting (NULL) entries
                     # ranked by cosine similarity. Avoids 2 round-trips.
                     cursor.execute(
@@ -1293,8 +1293,8 @@ def retrieve_knowledge_context(
                 cursor.close()
                 release_connection(conn)
 
-            # Apply release relevance bonus for next_gen entries (current quarter features rank higher)
-            if source_type == "next_gen":
+            # Apply release relevance bonus for next_gen/current_gen entries (current quarter features rank higher)
+            if source_type in ("next_gen", "current_gen"):
                 for row in rows:
                     row["score"] = (row.get("score") or 0) + _release_bonus(row.get("release"))
                 rows.sort(key=lambda r: r.get("score", 0), reverse=True)

@@ -35,6 +35,10 @@ VALID_SOLUTIONS = {
     "Ariba Invoice", "Ariba Reporting", "Ariba Supplier Risk",
     "Ariba Sourcing", "Spend Analysis", "Ariba SIPM",
     "Ariba SLP",
+    # Fieldglass solutions
+    "SAP Fieldglass External Workforce", "SAP Fieldglass Services Procurement",
+    # Additional knowledge-only solutions
+    "SAP Ariba Category Management", "SAP Ariba Intake Management",
     # Extended solutions (from IDEAS.md — historical data may use these)
     "Ariba Buying and Invoicing", "Discount Management",
     "Business Network Discovery", "Ariba Overall",
@@ -106,6 +110,17 @@ _EXPLICIT_ALIASES = {
     "overall":                              "Ariba Overall",
     "supply chain collaboration":           "Supply Chain Collaboration",
     "supply chain":                         "Supply Chain Collaboration",
+    # Fieldglass
+    "fieldglass":                           "SAP Fieldglass External Workforce",
+    "fieldglass external workforce":        "SAP Fieldglass External Workforce",
+    "external workforce":                   "SAP Fieldglass External Workforce",
+    "fieldglass services procurement":      "SAP Fieldglass Services Procurement",
+    "fieldglass services":                  "SAP Fieldglass Services Procurement",
+    "services procurement":                 "SAP Fieldglass Services Procurement",
+    # Knowledge-only solutions
+    "category management":                  "SAP Ariba Category Management",
+    "intake management":                    "SAP Ariba Intake Management",
+    "intake":                               "SAP Ariba Intake Management",
 }
 
 # Columns to drop — row numbering/IDs from Excel that have no analytical value
@@ -478,3 +493,56 @@ def clean_str(val) -> str | None:
         return None
     s = str(val).strip()
     return s if s and s.lower() not in ("nan", "none", "") else None
+
+
+# ---------------------------------------------------------------------------
+# Roadmap release → approximate delivery date (for deprecated detection)
+# ---------------------------------------------------------------------------
+from datetime import date as _date
+
+RELEASE_DATE_MAP: dict[str, "_date | None"] = {
+    # Delivered — before or on PDF update date 2026-08-21
+    "2601":         _date(2026, 1, 31),
+    "2602":         _date(2026, 2, 28),
+    "2603 (Beta)":  _date(2026, 3, 31),
+    "2603":         _date(2026, 3, 31),
+    "2604":         _date(2026, 4, 30),
+    "2605":         _date(2026, 5, 31),
+    "2606":         _date(2026, 6, 30),
+    "Planned 2605": _date(2026, 5, 31),
+    "Planned 2606": _date(2026, 6, 30),
+    "Q1 2026":      _date(2026, 3, 31),
+    "Q1/2026":      _date(2026, 3, 31),
+    "H1 2026":      _date(2026, 6, 30),
+    "Q2 2026":      _date(2026, 6, 30),
+    "Q2/2026":      _date(2026, 6, 30),
+    "Q2/2026+":     _date(2026, 6, 30),
+    "GA":           _date(2026, 8, 21),
+    "Available":    _date(2026, 8, 21),  # Features marked "Available" are shipped
+    # Future — after PDF update date
+    "2607":         _date(2026, 7, 31),  # past — July
+    "2608":         _date(2026, 8, 21),  # on PDF date — treat as delivered
+    "2609":         _date(2026, 9, 30),
+    "2610":         _date(2026, 10, 31),
+    "2611":         _date(2026, 11, 30),
+    "Q3 2026":      _date(2026, 9, 30),
+    "Q3/2026":      _date(2026, 9, 30),
+    "H2 2026":      _date(2026, 12, 31),
+    "Q4 2026":      _date(2026, 12, 31),
+    "Q4/2026":      _date(2026, 12, 31),
+    "Q4/2026+":     _date(2026, 12, 31),
+    "2026+":        _date(2027, 1, 1),
+    "Q1/2027":      _date(2027, 3, 31),
+    "Q1/2027+":     _date(2027, 3, 31),
+    "Q1 2027":      _date(2027, 3, 31),
+    "Q2/2027+":     _date(2027, 6, 30),
+    "Q2 2027":      _date(2027, 6, 30),
+    "Roadmap":      None,   # Undated future — treat as future for deprecated logic
+    "Planned":      None,   # Undated planned — treat as future
+}
+
+# Date encoded in the PDF filename: Unified Roadmap SAP Ariba_MASTER_Copy_260821.pdf
+PDF_UPDATE_DATE = _date(2026, 8, 21)
+
+# Source file tag written to KNOWLEDGE_BASE rows ingested from this PDF
+ROADMAP_PDF_SOURCE_FILE = "roadmap_260821_unified.pdf"

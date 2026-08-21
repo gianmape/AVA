@@ -551,7 +551,7 @@ def retrieve_knowledge_context(
         - "documentation": list of {"title": ..., "url": ...} — pre-validated SAP Help Portal links.
     """
     if source_types is None:
-        source_types = ["next_gen", "workshop"]
+        source_types = ["next_gen", "current_gen", "workshop"]
 
     # Always include vlm_kpis for solutions that have KPI data — do not rely on Joule passing it.
     if solution in _VLM_SOLUTIONS and "vlm_kpis" not in source_types:
@@ -569,9 +569,9 @@ def retrieve_knowledge_context(
     log.info("   Returned %d entries across %d source(s)", total, len(source_types))
 
     # Strip 'content' from vlm_kpis entries only — they have structured fields sufficient
-    # for synthesis. next_gen entries keep 'content' (the feature description text).
+    # for synthesis. next_gen and current_gen entries keep 'content' (the feature description text).
     results = {
-        st: (entries if st == "next_gen"
+        st: (entries if st in ("next_gen", "current_gen")
              else [{k: v for k, v in e.items() if k != "content"} for e in entries])
         for st, entries in results.items()
     }
@@ -579,14 +579,19 @@ def retrieve_knowledge_context(
     payload = {
         "IMPORTANT_CONTEXT": {
             "next_gen_warning": (
-                "ALL entries in next_gen are exclusive to Next-gen SAP Ariba — "
+                "Entries in 'next_gen' are exclusive to Next-gen SAP Ariba — "
                 "a fully re-engineered AI-native platform on SAP BTP released Q1 2026. "
                 "These features are NOT available in the current-generation platform. "
                 "Clients must transition first (Greenfield or Brownfield). "
                 "No new contract needed — delivered under existing subscriptions. "
                 "NEVER recommend these as immediately available. "
-                "ALWAYS state this context before listing any feature."
-            )
+                "ALWAYS state this context before listing any next_gen feature."
+            ),
+            "current_gen_note": (
+                "Entries in 'current_gen' are available on the CURRENT SAP Ariba platform. "
+                "These are roadmap enhancements being delivered without requiring any migration "
+                "or transition. Present them as upcoming or already available capabilities."
+            ),
         },
         "results": results,
         "documentation": _search_docs(

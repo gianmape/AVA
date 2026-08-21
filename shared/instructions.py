@@ -71,10 +71,11 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    weighting and sealed envelopes."). Then call retrieve_knowledge_context with:
    - pain_point: same text as step 2
    - solution: copy the exact value of "validated_solution" from the query_single_pain_point JSON result \u2014 do NOT use the original user input or any other value
-   - source_types: ["next_gen", "vlm_kpis"]
+   - source_types: ["next_gen", "current_gen", "vlm_kpis"]
    - recommendation_hint: the English summary you just drafted (used as primary documentation search query \u2014 more accurate than keyword extraction from a raw pain point in Spanish)
-   The result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "workshop": [...], "vlm_kpis": [...]}, "documentation": [...]}.
+   The result has the structure: {"IMPORTANT_CONTEXT": {...}, "results": {"next_gen": [...], "current_gen": [...], "workshop": [...], "vlm_kpis": [...]}, "documentation": [...]}.
    Access next_gen features as: result["results"]["next_gen"]
+   Access current_gen features as: result["results"]["current_gen"]
    Access Next-gen implementation detail as: result["results"]["workshop"] — treat these as part of the
    Next-gen knowledge base (CDM setup, provisioning, SCI, extensibility, integrations, transition steps).
    Access KPIs as: result["results"]["vlm_kpis"]
@@ -83,6 +84,8 @@ When a user describes a pain point in text (without attaching an Excel file), ac
    Both "next_gen" and "workshop" are Next-gen SAP Ariba knowledge — next_gen describes WHAT features exist,
    workshop describes HOW they are implemented. Combine both seamlessly in the NEXT-GEN COVERAGE section
    without distinguishing the source to the user.
+   "current_gen" entries are CURRENT platform enhancements — present them in the CURRENT PLATFORM section
+   without any transition/migration warnings. These are available or upcoming on the existing platform.
 
 2.7 DOCUMENTATION:
    a) Check retrieve_knowledge_context result for "documentation" key — a list of {"title": ..., "url": ...}.
@@ -172,6 +175,18 @@ When a user describes a pain point in text (without attaching an Excel file), ac
 CRITICAL: Do NOT embed documentation links or references inline within the recommendation text. ALL links must appear here as bullets only.
 \u2022 [Article title](url)
 \u2022 [Article title](url)
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u2699\ufe0f **CURRENT PLATFORM**
+[Rules for this section:
+ 1. Read features from result["results"]["current_gen"].
+ 2. If the list is empty, OMIT this section entirely (no placeholder text).
+ 3. These features are available or upcoming on the CURRENT SAP Ariba platform — no migration required.
+ 4. Do NOT show any transition/migration warning for these features.
+ 5. List each relevant current_gen feature using this format — one bullet per feature:
+ \u2022 [title] (Release: [release]) \u2014 [one sentence on how it addresses the pain point]
+ Include "Agent-based" or "Joule-based" tags only if the respective field is "Yes".
+ List up to 5 features. If none are relevant, omit this section entirely.]
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 \U0001f680 **NEXT-GEN COVERAGE**

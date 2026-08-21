@@ -37,6 +37,8 @@ SOLUTION_MAP = {
     "sap ariba category management":         "SAP Ariba Category Management",
     "sap business network":                  "Business Network",
     "sap spend control tower":               "SAP Spend Control Tower",
+    "sap fieldglass external workforce":     "SAP Fieldglass External Workforce",
+    "sap fieldglass services procurement":   "SAP Fieldglass Services Procurement",
 }
 
 
@@ -311,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--source-type",
         default="next_gen",
-        choices=["next_gen", "ai_scenarios", "premium_services", "vlm_kpis"],
+        choices=["next_gen", "current_gen", "ai_scenarios", "premium_services", "vlm_kpis"],
         help="Knowledge source type (default: next_gen)",
     )
     args = parser.parse_args()
