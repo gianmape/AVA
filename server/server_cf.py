@@ -441,19 +441,27 @@ def get_adoption_metrics(
 
 def _build_http_app():
     import os
+    import re
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
 
-    expected_header = os.environ.get("JWD_CALLER_HEADER", "").strip().lower()
-    expected_value  = os.environ.get("JWD_CALLER_VALUE",  "").strip()
-    guard_active    = bool(expected_header and expected_value)
+    # Guard mode — controlled by AVA_GUARD env var:
+    #   "enforce"  — reject requests that don't originate from SAP BTP (default in prod)
+    #   "log"      — allow all but log whether they would pass or fail (safe for rollout)
+    #   "off"      — no checks (emergency bypass only)
+    guard_mode = os.environ.get("AVA_GUARD", "enforce").strip().lower()
+    log.info("=== Caller guard mode: %s ===", guard_mode)
 
-    if guard_active:
-        log.info("=== Caller guard ACTIVE — header=%r expected=%r ===", expected_header, expected_value)
-    else:
-        log.info("=== Caller guard INACTIVE — logging headers only ===")
+    # x-scp-request-id is injected by the SAP BTP gateway on every request that
+    # passes through the platform (Joule Desktop → BTP → CF app).
+    # External scripts hitting the CF URL directly will NOT have this header.
+    # Format: <UUID>-<HEX>-<HEX>  e.g. "7c63e6e8-94f9-442c-ab70-e2b1e5ca113c-6AB1471D-3179761"
+    _SCP_HEADER = "x-scp-request-id"
+    _SCP_PATTERN = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9A-F]+-[0-9A-F]+$"
+    )
 
     _SENSITIVE_HEADERS = {"authorization", "cookie", "x-api-key", "x-auth-token"}
 
@@ -472,18 +480,30 @@ def _build_http_app():
             )
             _current_ip.set(client_ip)
 
-            if guard_active:
-                actual = request.headers.get(expected_header, "")
-                if actual != expected_value:
-                    log.warning(
-                        "REJECTED — header %r=%r (expected %r) from %s",
-                        expected_header, actual, expected_value,
-                        request.client.host if request.client else "unknown",
-                    )
+            if guard_mode == "off":
+                return await call_next(request)
+
+            # Validate SAP BTP origin: x-scp-request-id must be present and well-formed.
+            # This header is injected automatically by the SAP BTP gateway — Joule Desktop
+            # routes through BTP, so legitimate requests always carry it. Direct HTTP
+            # clients (curl, scripts, etc.) hitting the CF URL will not have it.
+            scp_id = request.headers.get(_SCP_HEADER, "")
+            is_from_btp = bool(scp_id and _SCP_PATTERN.match(scp_id))
+
+            if not is_from_btp:
+                log.warning(
+                    "GUARD [%s] — missing/invalid %s=%r from %s",
+                    guard_mode, _SCP_HEADER, scp_id[:60] if scp_id else "",
+                    client_ip or "unknown",
+                )
+                if guard_mode == "enforce":
                     return JSONResponse(
-                        {"error": "Unauthorized caller — only Joule Desktop is allowed."},
+                        {"error": "Unauthorized — access restricted to Joule Desktop via SAP BTP."},
                         status_code=403,
                     )
+                # guard_mode == "log": let it through but the warning is already logged
+            else:
+                log.info("GUARD OK — BTP origin confirmed (%s=%.36s…)", _SCP_HEADER, scp_id)
 
             return await call_next(request)
 
