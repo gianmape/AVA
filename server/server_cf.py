@@ -442,26 +442,55 @@ def get_adoption_metrics(
 def _build_http_app():
     import os
     import re
+    import time
+    import collections
+    import threading
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
 
     # Guard mode — controlled by AVA_GUARD env var:
-    #   "enforce"  — reject requests that don't originate from SAP BTP (default in prod)
-    #   "log"      — allow all but log whether they would pass or fail (safe for rollout)
+    #   "enforce"  — reject unauthorized requests with 403 (production default)
+    #   "log"      — allow all but log pass/fail (safe for rollout validation)
     #   "off"      — no checks (emergency bypass only)
     guard_mode = os.environ.get("AVA_GUARD", "enforce").strip().lower()
     log.info("=== Caller guard mode: %s ===", guard_mode)
 
-    # x-scp-request-id is injected by the SAP BTP gateway on every request that
-    # passes through the platform (Joule Desktop → BTP → CF app).
-    # External scripts hitting the CF URL directly will NOT have this header.
-    # Format: <UUID>-<HEX>-<HEX>  e.g. "7c63e6e8-94f9-442c-ab70-e2b1e5ca113c-6AB1471D-3179761"
+    # x-scp-request-id is injected by the SAP BTP gateway on every request routed
+    # through the platform. Direct HTTP clients bypassing BTP entirely will not have it.
     _SCP_HEADER = "x-scp-request-id"
     _SCP_PATTERN = re.compile(
         r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9A-F]+-[0-9A-F]+$"
     )
+
+    # Rate limiting — token bucket per client IP.
+    # Limits: 20 requests/minute burst, 10 requests/minute sustained.
+    # Protects against external abuse (scrapers, bots hitting the public URL).
+    # Configured via env vars AVA_RATE_BURST and AVA_RATE_PER_MINUTE.
+    _RATE_BURST = int(os.environ.get("AVA_RATE_BURST", "20"))
+    _RATE_PER_MIN = int(os.environ.get("AVA_RATE_PER_MINUTE", "10"))
+    _RATE_REFILL = _RATE_PER_MIN / 60.0  # tokens per second
+
+    # {ip: [tokens, last_refill_time]}
+    _buckets: dict = {}
+    _buckets_lock = threading.Lock()
+
+    def _rate_check(ip: str) -> bool:
+        """Return True if request is allowed, False if rate limit exceeded."""
+        now = time.monotonic()
+        with _buckets_lock:
+            if ip not in _buckets:
+                _buckets[ip] = [_RATE_BURST, now]
+            tokens, last = _buckets[ip]
+            # Refill tokens based on elapsed time
+            tokens = min(_RATE_BURST, tokens + (now - last) * _RATE_REFILL)
+            _buckets[ip][1] = now
+            if tokens >= 1:
+                _buckets[ip][0] = tokens - 1
+                return True
+            _buckets[ip][0] = tokens
+            return False
 
     _SENSITIVE_HEADERS = {"authorization", "cookie", "x-api-key", "x-auth-token"}
 
@@ -477,33 +506,44 @@ def _build_http_app():
             client_ip = (
                 request.headers.get("x-forwarded-for", "").split(",")[0].strip()
                 or (request.client.host if request.client else None)
+                or "unknown"
             )
             _current_ip.set(client_ip)
 
             if guard_mode == "off":
                 return await call_next(request)
 
-            # Validate SAP BTP origin: x-scp-request-id must be present and well-formed.
-            # This header is injected automatically by the SAP BTP gateway — Joule Desktop
-            # routes through BTP, so legitimate requests always carry it. Direct HTTP
-            # clients (curl, scripts, etc.) hitting the CF URL will not have it.
+            # Layer 1: BTP origin check — x-scp-request-id must be present and well-formed.
+            # Blocks direct HTTP clients (curl, scripts) that bypass BTP routing entirely.
             scp_id = request.headers.get(_SCP_HEADER, "")
             is_from_btp = bool(scp_id and _SCP_PATTERN.match(scp_id))
 
             if not is_from_btp:
                 log.warning(
-                    "GUARD [%s] — missing/invalid %s=%r from %s",
+                    "GUARD L1 [%s] — missing/invalid %s=%r from %s",
                     guard_mode, _SCP_HEADER, scp_id[:60] if scp_id else "",
-                    client_ip or "unknown",
+                    client_ip,
                 )
                 if guard_mode == "enforce":
                     return JSONResponse(
-                        {"error": "Unauthorized — access restricted to Joule Desktop via SAP BTP."},
+                        {"error": "Unauthorized — access restricted to SAP BTP clients."},
                         status_code=403,
                     )
-                # guard_mode == "log": let it through but the warning is already logged
             else:
-                log.info("GUARD OK — BTP origin confirmed (%s=%.36s…)", _SCP_HEADER, scp_id)
+                log.info("GUARD L1 OK — BTP origin confirmed (%s=%.36s…)", _SCP_HEADER, scp_id)
+
+            # Layer 2: Rate limiting per client IP.
+            # Protects against abuse from any single source even if it passes L1.
+            if not _rate_check(client_ip):
+                log.warning(
+                    "RATE LIMIT exceeded for %s (burst=%d, per_min=%d)",
+                    client_ip, _RATE_BURST, _RATE_PER_MIN,
+                )
+                return JSONResponse(
+                    {"error": "Rate limit exceeded. Please slow down."},
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
 
             return await call_next(request)
 

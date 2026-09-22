@@ -10,11 +10,16 @@ applications:
     routes:
       - route: ava.cfapps.us30.hana.ondemand.com
     env:
-      # Caller guard — restricts access to Joule Desktop (via SAP BTP gateway).
+      # Caller guard — rejects requests that bypass SAP BTP routing entirely.
       # "enforce": reject non-BTP requests with 403 (production)
       # "log":     allow all but log failures (safe rollout / validation)
       # "off":     disabled (emergency only)
-      AVA_GUARD: "log"
+      AVA_GUARD: "enforce"
+      # Rate limiting — token bucket per client IP (protects against external abuse).
+      # AVA_RATE_BURST: max requests allowed in a burst (default 20)
+      # AVA_RATE_PER_MINUTE: sustained requests per minute (default 10)
+      AVA_RATE_BURST: "20"
+      AVA_RATE_PER_MINUTE: "10"
       AICORE_RESOURCE_GROUP: default
       EMBEDDING_MODEL_NAME: gemini-embedding
       HANA_PORT: "443"
