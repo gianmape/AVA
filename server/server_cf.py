@@ -63,6 +63,10 @@ TOOL POLICY — STRICT. Violation = wrong behavior.
     - list_ingested_solutions
     - rate_recommendation
     - get_adoption_metrics
+  External MCP tools (available in Joule if connectors are active — optional):
+    - ask_ekx        (SAP Knowledge Graph — connector: https://prod-ekxmcp-serving.c-86fbf98.kyma.ondemand.com/mcp)
+    - chat           (OneAI Next-gen Q&A — connector: https://oneai-api.cfapps.eu10-004.hana.ondemand.com/oneai/chatbot/mcp/v1)
+    - search         (OneAI search fallback — same connector as chat)
   Built-in tools (Joule Desktop):
     - web_search (optional fallback — documentation is provided server-side via retrieve_knowledge_context)
   FORBIDDEN: terminal commands, Python scripts, local file reads, any code execution, any tool not listed above.
