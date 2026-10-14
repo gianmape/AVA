@@ -1,0 +1,59 @@
+{
+  "authenticationMethod": "route",
+  "routes": [
+    {
+      "source": "^/.well-known/oauth-authorization-server/mcp/?$",
+      "target": "/.well-known/oauth-authorization-server/mcp",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/.well-known/(.*)$",
+      "target": "/.well-known/$1",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/authorize$",
+      "target": "/authorize",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/token$",
+      "target": "/token",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/register$",
+      "target": "/register",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/oauth/callback$",
+      "target": "/oauth/callback",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/mcp/(.*)$",
+      "target": "/mcp/$1",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/mcp$",
+      "target": "/mcp",
+      "destination": "ava-backend",
+      "authenticationType": "none"
+    },
+    {
+      "source": "^/(.*)$",
+      "target": "/$1",
+      "destination": "ava-backend",
+      "authenticationType": "ias"
+    }
+  ]
+}

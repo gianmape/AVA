@@ -447,12 +447,18 @@ def _build_http_app():
     import os
     import re
     import time
+    import json as _json
+    import secrets
     import collections
     import threading
+    import asyncio
+    import ssl
+    import aiohttp
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, Response
+    from starlette.requests import Request
 
     # Guard mode — controlled by AVA_GUARD env var:
     #   "enforce"  — reject unauthorized requests with 403 (production default)
@@ -517,6 +523,14 @@ def _build_http_app():
             if guard_mode == "off":
                 return await call_next(request)
 
+            # OAuth proxy endpoints are public by design — skip all guards.
+            _OAUTH_PATHS = {"/authorize", "/token", "/register", "/oauth/callback",
+                            "/.well-known/oauth-authorization-server",
+                            "/.well-known/oauth-protected-resource",
+                            "/.well-known/openid-configuration"}
+            if request.url.path in _OAUTH_PATHS:
+                return await call_next(request)
+
             # Layer 1: BTP origin check — x-scp-request-id must be present and well-formed.
             # Blocks direct HTTP clients (curl, scripts) that bypass BTP routing entirely.
             scp_id = request.headers.get(_SCP_HEADER, "")
@@ -549,14 +563,301 @@ def _build_http_app():
                     headers={"Retry-After": "60"},
                 )
 
+            # Layer 3: Bearer token check on /mcp paths.
+            # Joule and MCP clients must present a valid IAS Bearer token.
+            # /.well-known/ paths are exempt so Joule can discover auth metadata.
+            if request.url.path.startswith("/mcp"):
+                auth_header = request.headers.get("authorization", "")
+                if not auth_header.lower().startswith("bearer "):
+                    log.warning("GUARD L3 — missing Bearer token on %s from %s", request.url.path, client_ip)
+                    # RFC 9728 / MCP 2025-11-25: resource_metadata URL must include the
+                    # resource path so Joule Desktop fetches the path-specific metadata
+                    # and finds resource == the URL the user configured (with or without /).
+                    resource_path = request.url.path.rstrip("/")  # /mcp (no trailing slash)
+                    return JSONResponse(
+                        {"error": "Unauthorized — Bearer token required."},
+                        status_code=401,
+                        headers={
+                            "WWW-Authenticate": (
+                                f'Bearer resource_metadata="https://ava.cfapps.us30.hana.ondemand.com'
+                                f'/.well-known/oauth-protected-resource{resource_path}"'
+                            )
+                        },
+                    )
+                log.info("GUARD L3 OK — Bearer token present on %s", request.url.path)
+
             return await call_next(request)
 
+    from starlette.routing import Route
+
+    # AVA_BASE = public URL (via approuter). AVA_OAUTH_BASE = direct backend URL,
+    # bypasses approuter so /authorize is not hijacked by @sap/approuter's OAuth handler.
+    AVA_BASE = "https://ava.cfapps.us30.hana.ondemand.com"
+    AVA_OAUTH_BASE = "https://ava-oauth.cfapps.us30.hana.ondemand.com"
+    IAS_BASE = "https://akwny290b.accounts.ondemand.com"
+
+    # ── IAS credentials from VCAP_SERVICES (CF binding) ──────────────────────
+    _vcap = _json.loads(os.environ.get("VCAP_SERVICES", "{}"))
+    _ias_creds = (_vcap.get("identity") or [{}])[0].get("credentials") or {}
+    IAS_CLIENT_ID = _ias_creds.get("clientid", "")
+    IAS_CLIENT_SECRET = _ias_creds.get("clientsecret", "")
+    IAS_APP_TID = _ias_creds.get("app_tid", "")
+    IAS_CERT_PEM = _ias_creds.get("certificate", "")
+    IAS_KEY_PEM = _ias_creds.get("key", "")
+    log.info("OAuth proxy: IAS_CLIENT_ID=%s cert=%s", IAS_CLIENT_ID[:12] + "…" if IAS_CLIENT_ID else "MISSING",
+             "yes" if IAS_CERT_PEM else "no")
+
+    # ── Pending OAuth relays: relayId → {orig_redirect, orig_state, created_at}
+    _pending_relays: dict = {}
+    _relays_lock = threading.Lock()
+
+    def _relay_cleanup():
+        cutoff = time.time() - 600
+        with _relays_lock:
+            stale = [k for k, v in _pending_relays.items() if v["created_at"] < cutoff]
+            for k in stale:
+                del _pending_relays[k]
+
+    # ── Build aiohttp SSL context from IAS mTLS cert/key ─────────────────────
+    def _make_ssl_ctx():
+        if not (IAS_CERT_PEM and IAS_KEY_PEM):
+            return None
+        import tempfile
+        ctx = ssl.create_default_context()
+        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as cf, \
+             tempfile.NamedTemporaryFile(suffix=".key", delete=False) as kf:
+            cf.write(IAS_CERT_PEM.encode() if isinstance(IAS_CERT_PEM, str) else IAS_CERT_PEM)
+            kf.write(IAS_KEY_PEM.encode() if isinstance(IAS_KEY_PEM, str) else IAS_KEY_PEM)
+            ctx.load_cert_chain(cf.name, kf.name)
+        return ctx
+
+    _ssl_ctx = _make_ssl_ctx()
+
+    async def _proxy_ias_token(params: dict) -> tuple[int, dict]:
+        """POST params to IAS /oauth2/token, return (status, json_body)."""
+        ssl_ctx = _ssl_ctx or True  # True = default SSL verify
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{IAS_BASE}/oauth2/token",
+                    data=params,
+                    ssl=ssl_ctx,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                ) as resp:
+                    body = await resp.json(content_type=None)
+                    return resp.status, body
+        except Exception as e:
+            log.error("IAS token proxy error: %s", e)
+            return 502, {"error": "server_error", "error_description": "upstream auth unreachable"}
+
+    # ── OAuth proxy endpoints ─────────────────────────────────────────────────
+
+    async def oauth_register(request: Request):
+        if request.method != "POST":
+            return JSONResponse({"error": "method_not_allowed"}, status_code=405)
+        body = await request.body()
+        try:
+            meta = _json.loads(body)
+        except Exception:
+            meta = {}
+        client_id = secrets.token_hex(16)
+        redirect_uris = meta.get("redirect_uris", [])
+        return JSONResponse({
+            "client_id": client_id,
+            "client_id_issued_at": int(time.time()),
+            "redirect_uris": redirect_uris,
+            "grant_types": meta.get("grant_types", ["authorization_code"]),
+            "response_types": meta.get("response_types", ["code"]),
+            "client_name": meta.get("client_name", "mcp-client"),
+            "token_endpoint_auth_method": "none",
+        }, status_code=201)
+
+    async def oauth_authorize(request: Request):
+        if request.method != "GET":
+            return JSONResponse({"error": "method_not_allowed"}, status_code=405)
+        q = dict(request.query_params)
+        if not q.get("client_id"):
+            return JSONResponse({"error": "invalid_request", "error_description": "client_id required"}, status_code=400)
+
+        relay_id = secrets.token_hex(16)
+        with _relays_lock:
+            _pending_relays[relay_id] = {
+                "orig_redirect": q.get("redirect_uri", ""),
+                "orig_state": q.get("state", ""),
+                "orig_client_id": q.get("client_id", ""),
+                "code_verifier_expected": q.get("code_challenge", ""),
+                "created_at": time.time(),
+            }
+        _relay_cleanup()
+
+        from urllib.parse import urlencode
+        params = {
+            "response_type": "code",
+            "client_id": IAS_CLIENT_ID,
+            "redirect_uri": f"{AVA_OAUTH_BASE}/oauth/callback",
+            "scope": q.get("scope", "openid email profile"),
+            "state": relay_id,
+            "nonce": secrets.token_hex(8),
+        }
+        if IAS_APP_TID:
+            params["app_tid"] = IAS_APP_TID
+        if q.get("code_challenge"):
+            params["code_challenge"] = q["code_challenge"]
+            params["code_challenge_method"] = q.get("code_challenge_method", "S256")
+
+        ias_url = f"{IAS_BASE}/oauth2/authorize?{urlencode(params)}"
+        log.info("OAuth /authorize → IAS relay_id=%s redirect_uri=%s", relay_id, q.get("redirect_uri"))
+        return Response(status_code=302, headers={"Location": ias_url})
+
+    async def oauth_callback(request: Request):
+        q = dict(request.query_params)
+        relay_id = q.get("state", "")
+        log.info("OAuth /oauth/callback relay_id=%s code=%s", relay_id, (q.get("code", "")[:20] + "…") if q.get("code") else "none")
+
+        with _relays_lock:
+            relay = _pending_relays.pop(relay_id, None)
+
+        if not relay:
+            log.warning("OAuth /oauth/callback — no relay found for state=%s", relay_id)
+            return JSONResponse({"error": "invalid_state", "error_description": "OAuth session expired or unknown"}, status_code=400)
+
+        if q.get("error"):
+            return JSONResponse({"error": q["error"], "error_description": q.get("error_description", "")}, status_code=400)
+
+        from urllib.parse import urlencode
+        back_params = {"code": q["code"]}
+        if relay["orig_state"]:
+            back_params["state"] = relay["orig_state"]
+
+        redirect_back = relay["orig_redirect"].rstrip("/") + "/?" + urlencode(back_params)
+        log.info("OAuth /oauth/callback → relaying code to %s", relay["orig_redirect"])
+        return Response(status_code=302, headers={"Location": redirect_back})
+
+    async def oauth_token(request: Request):
+        if request.method != "POST":
+            return JSONResponse({"error": "method_not_allowed"}, status_code=405)
+        body = await request.body()
+        from urllib.parse import parse_qs
+        params_raw = parse_qs(body.decode(), keep_blank_values=True)
+        params = {k: v[0] for k, v in params_raw.items()}
+        grant_type = params.get("grant_type", "")
+
+        if grant_type == "authorization_code":
+            ias_params = {
+                "grant_type": "authorization_code",
+                "client_id": IAS_CLIENT_ID,
+                "client_secret": IAS_CLIENT_SECRET,
+                "redirect_uri": f"{AVA_OAUTH_BASE}/oauth/callback",
+                "code": params.get("code", ""),
+            }
+            if params.get("code_verifier"):
+                ias_params["code_verifier"] = params["code_verifier"]
+        elif grant_type == "refresh_token":
+            ias_params = {
+                "grant_type": "refresh_token",
+                "client_id": IAS_CLIENT_ID,
+                "client_secret": IAS_CLIENT_SECRET,
+                "refresh_token": params.get("refresh_token", ""),
+            }
+        else:
+            return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+        status, body_json = await _proxy_ias_token(ias_params)
+        log.info("OAuth /token grant=%s → IAS status=%d", grant_type, status)
+        return JSONResponse(body_json, status_code=status)
+
+    async def oauth_metadata(request):
+        return JSONResponse({
+            "issuer": AVA_BASE,
+            "authorization_endpoint": f"{AVA_OAUTH_BASE}/authorize",
+            "token_endpoint": f"{AVA_OAUTH_BASE}/token",
+            "registration_endpoint": f"{AVA_OAUTH_BASE}/register",
+            "jwks_uri": f"{IAS_BASE}/oauth2/certs",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "private_key_jwt"],
+            "scopes_supported": ["openid", "email", "profile"],
+            "subject_types_supported": ["public"],
+            "client_id_metadata_document_supported": True,
+        })
+
+    async def openid_configuration(request):
+        return JSONResponse({
+            "issuer": AVA_BASE,
+            "authorization_endpoint": f"{AVA_OAUTH_BASE}/authorize",
+            "token_endpoint": f"{AVA_OAUTH_BASE}/token",
+            "registration_endpoint": f"{AVA_OAUTH_BASE}/register",
+            "userinfo_endpoint": f"{IAS_BASE}/oauth2/userinfo",
+            "jwks_uri": f"{IAS_BASE}/oauth2/certs",
+            "end_session_endpoint": f"{IAS_BASE}/oauth2/logout",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "scopes_supported": ["openid", "email", "profile"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["RS256"],
+        })
+
+    async def oauth_protected_resource(request):
+        return JSONResponse({
+            "resource": f"{AVA_BASE}/mcp/",
+            "authorization_servers": [AVA_BASE],
+            "bearer_methods_supported": ["header"],
+            "scopes_supported": ["openid", "email", "profile"],
+        })
+
+    async def oauth_protected_resource_mcp(request):
+        # MCP protocol 2025-11-25: resource_metadata URL includes the resource path.
+        # Joule Desktop fetches this path-specific endpoint and validates that
+        # resource == the URL the user configured. Return /mcp (no trailing slash)
+        # so it matches whether the user typed /mcp or /mcp/.
+        return JSONResponse({
+            "resource": f"{AVA_BASE}/mcp",
+            "authorization_servers": [AVA_BASE],
+            "bearer_methods_supported": ["header"],
+            "scopes_supported": ["openid", "email", "profile"],
+        })
+
+    well_known_routes = [
+        Route("/.well-known/oauth-authorization-server", endpoint=oauth_metadata),
+        # MCP protocol 2025-11-25 appends the resource path to discover auth server metadata.
+        # Clients using /mcp or /mcp/ as resource will request these paths:
+        Route("/.well-known/oauth-authorization-server/mcp", endpoint=oauth_metadata),
+        Route("/.well-known/oauth-authorization-server/mcp/", endpoint=oauth_metadata),
+        Route("/.well-known/openid-configuration", endpoint=openid_configuration),
+        Route("/.well-known/oauth-protected-resource", endpoint=oauth_protected_resource),
+        # Path-specific resource metadata: resource_metadata in WWW-Authenticate points here.
+        # Returns resource == /mcp (no trailing slash) matching both /mcp and /mcp/ inputs.
+        Route("/.well-known/oauth-protected-resource/mcp", endpoint=oauth_protected_resource_mcp),
+        Route("/.well-known/oauth-protected-resource/mcp/", endpoint=oauth_protected_resource_mcp),
+    ]
+
+    oauth_routes = [
+        Route("/register", endpoint=oauth_register, methods=["POST"]),
+        Route("/authorize", endpoint=oauth_authorize, methods=["GET"]),
+        Route("/oauth/callback", endpoint=oauth_callback, methods=["GET"]),
+        Route("/token", endpoint=oauth_token, methods=["POST"]),
+    ]
+
     base_app = mcp.streamable_http_app()
-    return Starlette(
+
+    starlette_app = Starlette(
         middleware=[Middleware(CallerMiddleware)],
-        routes=base_app.routes,
+        routes=well_known_routes + oauth_routes + base_app.routes,
         lifespan=base_app.router.lifespan_context,
     )
+
+    # Normalize /mcp (no trailing slash) → /mcp/ at the ASGI level so clients
+    # that don't follow redirects (Claude Desktop, Joule Work Desktop) work too.
+    async def app_with_path_fix(scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await starlette_app(scope, receive, send)
+
+    return app_with_path_fix
 
 
 if __name__ == "__main__":

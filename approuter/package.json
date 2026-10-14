@@ -1,0 +1,14 @@
+{
+  "name": "ava-approuter",
+  "version": "1.0.0",
+  "description": "Application Router for AVA — enforces IAS authentication before proxying to the MCP backend",
+  "scripts": {
+    "start": "node start.js"
+  },
+  "dependencies": {
+    "@sap/approuter": "*"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

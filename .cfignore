@@ -16,3 +16,5 @@ ingestion/README.md
 CONTEXT.md
 IDEAS.md
 PENDING.md
+# approuter has its own cf push from its own directory
+approuter/

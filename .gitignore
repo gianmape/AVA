@@ -31,3 +31,7 @@ data/NG Workshop/
 CONTEXT.md
 IDEAS.md
 PENDING.md
+
+# App Router — local dev only, contains IAS credentials placeholders
+approuter/default-env.json
+approuter/node_modules/

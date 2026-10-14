@@ -1,0 +1,26 @@
+---
+applications:
+  - name: ava-approuter
+    buildpacks:
+      - nodejs_buildpack
+    command: node start.js
+    memory: 256M
+    disk_quota: 256M
+    instances: 1
+    path: .
+    # Temporary internal route used during the cutover procedure.
+    # The public route (ava.cfapps.us30.hana.ondemand.com) is mapped manually
+    # after the backend route is unmapped — see deployment instructions.
+    routes:
+      - route: ava-approuter.cfapps.us30.hana.ondemand.com
+    env:
+      destinations: >
+        [
+          {
+            "name": "ava-backend",
+            "url": "https://ava-internal.cfapps.us30.hana.ondemand.com",
+            "forwardAuthToken": true
+          }
+        ]
+    services:
+      - ava-ias
